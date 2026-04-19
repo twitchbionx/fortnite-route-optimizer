@@ -432,164 +432,146 @@ class SceWinManager {
     const dir = path.dirname(exportPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    // Clean up old export file so we can detect if a new one was created
-    try { fs.unlinkSync(exportPath); } catch(e) {}
-
-    // AMISCE/SceWin needs to run from its own directory with admin elevation.
-    // Different AMISCE versions use wildly different flags. We try everything.
     const scewinDir = path.dirname(this.scewinPath);
     const scewinExe = path.basename(this.scewinPath);
-    const exportName = path.basename(exportPath);
 
-    // First: try to discover what flags this version supports by running /? or /h
+    // Get help output for debugging
     let helpOutput = "";
     const helpResult = await runCmd(`cd /d "${scewinDir}" && "${scewinExe}" /? 2>&1`, 10000);
     if (helpResult.output) helpOutput = helpResult.output;
-    if (!helpOutput) {
-      const h2 = await runCmd(`cd /d "${scewinDir}" && "${scewinExe}" /h 2>&1`, 10000);
-      if (h2.output) helpOutput = h2.output;
+    this._lastHelpOutput = helpOutput;
+
+    // AMISCE requires a kernel driver to read UEFI/BIOS variables.
+    // The "Unable to load driver" error means it MUST run as Administrator.
+    // We use a batch file approach that triggers a proper UAC elevation prompt.
+
+    // The correct syntax from AMISCE 5.x help:
+    //   SCEWIN /o /s <NVRAM Script File>
+    // /o = output/export mode, /s = script file path
+
+    const batchPath = path.join(dir, "scewin-export.bat");
+    const logPath = path.join(dir, "scewin-export-log.txt");
+    const amisceOutput = path.join(scewinDir, "AMISCE.txt");
+
+    // Clean up old files
+    for (const f of [exportPath, batchPath, logPath, amisceOutput]) {
+      try { fs.unlinkSync(f); } catch(e) {}
     }
-    this._lastHelpOutput = helpOutput; // store for debugging
 
-    // Build command list based on help output analysis
-    const cmds = [];
-    const esc = (p) => p.replace(/'/g, "''");
+    // Create batch file that runs AMISCE with admin rights from its own directory
+    // The batch captures stdout/stderr to a log file for debugging
+    const batchContent = `@echo off
+cd /d "${scewinDir}"
+echo Running AMISCE export... > "${logPath}"
+echo CWD: %CD% >> "${logPath}"
+echo Exe: ${scewinExe} >> "${logPath}"
+echo. >> "${logPath}"
 
-    // AMISCE 5.x syntax: /o outputs to AMISCE.txt in CWD (no path argument)
-    // Then we copy the output file to our desired location
-    cmds.push({
-      label: "AMISCE /o (output to CWD)",
-      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /o`,
-      outputFile: path.join(scewinDir, "AMISCE.txt"),
-    });
+echo === Attempt 1: /o /s === >> "${logPath}"
+"${scewinExe}" /o /s "${exportPath}" >> "${logPath}" 2>&1
+if exist "${exportPath}" (
+  echo SUCCESS: export file created >> "${logPath}"
+  exit /b 0
+)
 
-    // /o with /lang for full text descriptions
-    cmds.push({
-      label: "AMISCE /o /lang",
-      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /o /lang`,
-      outputFile: path.join(scewinDir, "AMISCE.txt"),
-    });
+echo === Attempt 2: /o (CWD output) === >> "${logPath}"
+"${scewinExe}" /o >> "${logPath}" 2>&1
+if exist "${amisceOutput}" (
+  copy /Y "${amisceOutput}" "${exportPath}" >> "${logPath}" 2>&1
+  echo SUCCESS: copied AMISCE.txt >> "${logPath}"
+  exit /b 0
+)
 
-    // /o with explicit filename — some versions support this
-    cmds.push({
-      label: "AMISCE /o /s <path>",
-      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /o /s "${exportPath}"`,
-      outputFile: exportPath,
-    });
+echo === Attempt 3: /o /lang /s === >> "${logPath}"
+"${scewinExe}" /o /lang /s "${exportPath}" >> "${logPath}" 2>&1
+if exist "${exportPath}" (
+  echo SUCCESS: export with /lang >> "${logPath}"
+  exit /b 0
+)
 
-    cmds.push({
-      label: "AMISCE /o <path>",
-      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /o "${exportPath}"`,
-      outputFile: exportPath,
-    });
+echo === Attempt 4: /o /s with /g (get all) === >> "${logPath}"
+"${scewinExe}" /o /s "${exportPath}" /g >> "${logPath}" 2>&1
 
-    // /ds = dump script — some AMISCE versions use this
-    cmds.push({
-      label: "AMISCE /ds",
-      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /ds "${exportPath}"`,
-      outputFile: exportPath,
-    });
+echo DONE >> "${logPath}"
+`;
 
-    // Elevated versions of the above
-    cmds.push({
-      label: "Elevated /o (CWD output)",
-      cmd: `powershell -Command "Start-Process -FilePath '${esc(this.scewinPath)}' -ArgumentList '/o' -WorkingDirectory '${esc(scewinDir)}' -Verb RunAs -Wait -WindowStyle Hidden"`,
-      outputFile: path.join(scewinDir, "AMISCE.txt"),
-    });
+    fs.writeFileSync(batchPath, batchContent);
 
-    cmds.push({
-      label: "Elevated /o /lang",
-      cmd: `powershell -Command "Start-Process -FilePath '${esc(this.scewinPath)}' -ArgumentList '/o /lang' -WorkingDirectory '${esc(scewinDir)}' -Verb RunAs -Wait -WindowStyle Hidden"`,
-      outputFile: path.join(scewinDir, "AMISCE.txt"),
-    });
+    // Run the batch file elevated via PowerShell UAC prompt
+    // -Wait ensures we wait for completion, -Verb RunAs triggers UAC
+    const elevatedResult = await runPS(`
+      $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c "${batchPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"' -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+      Write-Output "ExitCode:$($proc.ExitCode)"
+    `, 60000);
 
-    cmds.push({
-      label: "Elevated /o /s <path>",
-      cmd: `powershell -Command "Start-Process -FilePath '${esc(this.scewinPath)}' -ArgumentList '/o /s \\\"${esc(exportPath)}\\\"' -WorkingDirectory '${esc(scewinDir)}' -Verb RunAs -Wait -WindowStyle Hidden"`,
-      outputFile: exportPath,
-    });
+    this._lastElevatedResult = elevatedResult;
 
-    this._lastExportAttempts = [];
+    // Read the log file for debugging
+    let logContent = "";
+    try { logContent = fs.readFileSync(logPath, "utf8"); } catch(e) {}
+    this._lastExportLog = logContent;
 
-    for (const { label, cmd, outputFile } of cmds) {
-      // Clean up expected output files before each attempt
-      for (const f of [exportPath, outputFile]) {
-        try { fs.unlinkSync(f); } catch(e) {}
-      }
+    // Check if export file was created
+    const checkFiles = [exportPath, amisceOutput];
 
-      const r = await runCmd(cmd, 30000);
-      const attempt = { label, stdout: r.output?.substring(0, 500), stderr: r.error?.substring(0, 500), success: r.success };
-
-      // Check both the intended output file and common AMISCE output filenames
-      const checkFiles = [outputFile, exportPath];
-      if (outputFile !== path.join(scewinDir, "AMISCE.txt")) checkFiles.push(path.join(scewinDir, "AMISCE.txt"));
-
-      // Also check for any .txt file created in scewinDir in the last 30 seconds
-      try {
-        const files = fs.readdirSync(scewinDir);
-        for (const f of files) {
-          if (f.endsWith(".txt") || f.endsWith(".TXT")) {
-            const fp = path.join(scewinDir, f);
+    // Also scan for any new .txt files in SceWin dir
+    try {
+      const files = fs.readdirSync(scewinDir);
+      for (const f of files) {
+        if ((f.endsWith(".txt") || f.endsWith(".TXT")) && f !== "AMISCE.txt") {
+          const fp = path.join(scewinDir, f);
+          try {
             const stat = fs.statSync(fp);
-            if (Date.now() - stat.mtimeMs < 30000 && !checkFiles.includes(fp)) {
-              checkFiles.push(fp);
+            if (Date.now() - stat.mtimeMs < 60000) checkFiles.push(fp);
+          } catch(e) {}
+        }
+      }
+    } catch(e) {}
+
+    for (const checkPath of checkFiles) {
+      try {
+        if (fs.existsSync(checkPath)) {
+          const raw = fs.readFileSync(checkPath, "utf8");
+          if (raw.length > 50) {
+            // Try standard parse
+            const settings = this._parseExport(raw);
+            let count = Object.keys(settings).length;
+            if (count > 0) {
+              this.currentSettings = settings;
+              if (checkPath !== exportPath) {
+                try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
+              }
+              return { success: true, settings, settingCount: count, method: "elevated-batch" };
+            }
+            // Try alternate parse
+            const altSettings = this._parseExportAlt(raw);
+            count = Object.keys(altSettings).length;
+            if (count > 0) {
+              this.currentSettings = altSettings;
+              if (checkPath !== exportPath) {
+                try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
+              }
+              return { success: true, settings: altSettings, settingCount: count, method: "elevated-batch-alt" };
             }
           }
         }
       } catch(e) {}
-
-      for (const checkPath of checkFiles) {
-        try {
-          if (fs.existsSync(checkPath)) {
-            const raw = fs.readFileSync(checkPath, "utf8");
-            attempt.fileFound = checkPath;
-            attempt.fileSize = raw.length;
-
-            if (raw.length > 50) {
-              // Be more flexible in parsing — look for any structured BIOS data
-              if (raw.includes("Setup Question") || raw.includes("Token") ||
-                  raw.includes("Question") || raw.includes("Variable") ||
-                  raw.includes("BIOS") || raw.includes("Setup")) {
-                const settings = this._parseExport(raw);
-                const count = Object.keys(settings).length;
-
-                // If standard parse found nothing, try alternate parse
-                if (count === 0) {
-                  const altSettings = this._parseExportAlt(raw);
-                  const altCount = Object.keys(altSettings).length;
-                  if (altCount > 0) {
-                    this.currentSettings = altSettings;
-                    attempt.parsedCount = altCount;
-                    this._lastExportAttempts.push(attempt);
-                    if (checkPath !== exportPath) {
-                      try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
-                    }
-                    return { success: true, settings: altSettings, settingCount: altCount, method: label };
-                  }
-                } else {
-                  this.currentSettings = settings;
-                  attempt.parsedCount = count;
-                  this._lastExportAttempts.push(attempt);
-                  if (checkPath !== exportPath) {
-                    try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
-                  }
-                  return { success: true, settings, settingCount: count, method: label };
-                }
-              }
-            }
-          }
-        } catch(e) { attempt.parseError = e.message; }
-      }
-
-      this._lastExportAttempts.push(attempt);
     }
 
-    // Build a debug message with what we tried
-    const debugInfo = this._lastExportAttempts
-      .map(a => `${a.label}: ${a.fileFound ? `file=${a.fileFound}(${a.fileSize}b)` : "no file"} stdout="${(a.stdout || "").substring(0, 100)}"`)
-      .join(" | ");
+    // If UAC was denied or failed, provide clear feedback
+    const uacDenied = (elevatedResult.error || "").includes("canceled") || (elevatedResult.error || "").includes("denied") || (elevatedResult.error || "").includes("not recognized");
+    const driverError = logContent.includes("Unable to load driver");
 
-    return { success: false, error: `SceWin export failed after ${cmds.length} attempts. Debug: ${debugInfo}`, helpOutput: helpOutput?.substring(0, 500) };
+    let errorMsg = "SceWin export failed. ";
+    if (uacDenied || (!logContent && !elevatedResult.success)) {
+      errorMsg += "Admin elevation may have been denied — AMISCE needs Administrator access to read BIOS settings. Please click 'Yes' on the UAC prompt when it appears.";
+    } else if (driverError) {
+      errorMsg += "AMISCE kernel driver failed to load even with admin rights. Try: (1) Disable Secure Boot temporarily, (2) Disable Memory Integrity in Windows Security → Device Security → Core Isolation, (3) Restart your PC after disabling these.";
+    } else {
+      errorMsg += `Log: ${logContent.substring(0, 300)}`;
+    }
+
+    return { success: false, error: errorMsg, helpOutput: helpOutput?.substring(0, 500), log: logContent?.substring(0, 500) };
   }
 
   _parseExport(raw) {
@@ -1761,7 +1743,10 @@ class AIOverclockEngine {
     if (!exported.success) {
       this._log("analyzing", "bios-discovery-fail", "Failed to export BIOS settings: " + exported.error);
       if (exported.helpOutput) {
-        this._log("analyzing", "scewin-help", "SceWin help output: " + exported.helpOutput);
+        this._log("analyzing", "scewin-help", "SceWin help: " + exported.helpOutput);
+      }
+      if (exported.log) {
+        this._log("analyzing", "scewin-log", "SceWin batch log: " + exported.log);
       }
       return this.biosMap;
     }
