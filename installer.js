@@ -37,6 +37,17 @@ function runPS(cmd, timeout = 60000) {
 // ── Download a file with progress tracking (follows redirects) ──
 function downloadFile(url, destPath, onProgress) {
   return new Promise((resolve) => {
+    // Clean up any locked/stale file from a previous attempt
+    try { fs.unlinkSync(destPath); } catch(e) {}
+    // If still locked, use a unique temp name
+    let actualPath = destPath;
+    try {
+      fs.writeFileSync(destPath, "");
+      fs.unlinkSync(destPath);
+    } catch(e) {
+      actualPath = destPath.replace(/(\.\w+)$/, `-${Date.now()}$1`);
+    }
+
     const follow = (targetUrl, redirects = 0) => {
       if (redirects > 10) return resolve({ success: false, error: "Too many redirects" });
       const mod = targetUrl.startsWith("https") ? https : http;
@@ -56,7 +67,7 @@ function downloadFile(url, destPath, onProgress) {
 
         const totalBytes = parseInt(res.headers["content-length"] || "0", 10);
         let downloadedBytes = 0;
-        const file = fs.createWriteStream(destPath);
+        const file = fs.createWriteStream(actualPath);
 
         res.on("data", (chunk) => {
           downloadedBytes += chunk.length;
@@ -73,10 +84,19 @@ function downloadFile(url, destPath, onProgress) {
 
         res.pipe(file);
         file.on("finish", () => {
-          file.close(() => resolve({ success: true, path: destPath }));
+          file.close(() => {
+            // Rename to intended path if we used a temp name
+            if (actualPath !== destPath) {
+              try { fs.renameSync(actualPath, destPath); } catch(e) {
+                // If rename fails, just use the temp path
+                return resolve({ success: true, path: actualPath });
+              }
+            }
+            resolve({ success: true, path: destPath });
+          });
         });
         file.on("error", (e) => {
-          fs.unlink(destPath, () => {});
+          fs.unlink(actualPath, () => {});
           resolve({ success: false, error: e.message });
         });
       }).on("error", (e) => {
@@ -168,9 +188,10 @@ class DependencyManager {
       if (onProgress) onProgress({ status: "downloading", message: `Downloading WireGuard... ${p.downloadedMB}/${p.totalMB} MB`, percent: p.percent });
     });
     if (!dl.success) return { success: false, error: "Download failed: " + dl.error };
+    const installerPath = dl.path || destPath;
 
     if (onProgress) onProgress({ status: "installing", message: "Installing WireGuard (admin required)..." });
-    const result = await runInstallerElevated(destPath, "", true);
+    const result = await runInstallerElevated(installerPath, "", true);
 
     // Verify install
     const check = await this.checkWireGuard();
@@ -277,12 +298,13 @@ class DependencyManager {
       if (onProgress) onProgress({ status: "downloading", message: `Downloading SceWin... ${p.downloadedMB}/${p.totalMB} MB`, percent: p.percent });
     });
     if (!dl.success) return { success: false, error: "Download failed: " + dl.error };
+    const installerPath = dl.path || destPath;
 
     if (onProgress) onProgress({ status: "installing", message: "Running SceWin installer..." });
 
     // Run the SCEHUB downloader — it extracts SceWin binaries
     // Try running it with /S for silent, and set working dir to scewinDir
-    const result = await runInstallerElevated(destPath, `/D=${scewinDir}`, true);
+    const result = await runInstallerElevated(installerPath, `/D=${scewinDir}`, true);
 
     // Wait a moment for files to appear
     await new Promise(r => setTimeout(r, 2000));
@@ -368,14 +390,4 @@ class DependencyManager {
   }
 
   // ── Install a specific dependency ───────────────────────────────
-  async installDep(depId, onProgress) {
-    switch (depId) {
-      case "wireguard": return await this.installWireGuard(onProgress);
-      case "nvidia-smi": return await this.installNvidiaSmi(onProgress);
-      case "scewin": return await this.installSceWin(onProgress);
-      default: return { success: false, error: "Unknown dependency: " + depId };
-    }
-  }
-}
-
-module.exports = DependencyManager;
+  async installDep(depId, onProg
