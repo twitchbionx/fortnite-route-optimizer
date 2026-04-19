@@ -394,6 +394,15 @@
       tunnelError: "",
       tunnelDetectLog: [],
       tunnelWgPath: null,
+      // Route Diagnostic
+      routeDiag: {
+        phase: "idle", // idle | tracing | done
+        server: null,
+        directHops: [],
+        tunnelHops: [],
+        directPing: null,
+        tunnelPing: null,
+      },
       benchPhase: "idle",
       benchServer: null,
       benchBaseline: null,
@@ -709,6 +718,52 @@
     }
 
     function setBenchServer(id) { state.benchServer = id; render(); }
+
+    // ── Route Diagnostic ───────────────────────────────────────────
+    async function runRouteDiagnostic() {
+      const serverId = state.best || state.selected || "nae";
+      const rd = state.routeDiag;
+      rd.phase = "tracing";
+      rd.server = serverId;
+      rd.directHops = [];
+      rd.tunnelHops = [];
+      rd.directPing = null;
+      rd.tunnelPing = null;
+      render();
+
+      try {
+        // If tunnel is connected, current trace IS the tunneled route
+        if (state.tunnelStatus === "connected") {
+          // Trace through tunnel first (current state)
+          rd.tunnelHops = await window.api.traceroute(serverId);
+          const tunnelPing = await window.api.pingServer(serverId);
+          rd.tunnelPing = tunnelPing.ping;
+          render();
+
+          // Disconnect, trace direct route, reconnect
+          await window.api.tunnelDisconnect();
+          await new Promise(r => setTimeout(r, 2000));
+          rd.directHops = await window.api.traceroute(serverId);
+          const directPing = await window.api.pingServer(serverId);
+          rd.directPing = directPing.ping;
+
+          // Reconnect tunnel
+          await window.api.tunnelConnect();
+          await new Promise(r => setTimeout(r, 2000));
+          await refreshTunnelStatus();
+        } else {
+          // Tunnel off — trace direct route only
+          rd.directHops = await window.api.traceroute(serverId);
+          const directPing = await window.api.pingServer(serverId);
+          rd.directPing = directPing.ping;
+        }
+      } catch(e) {
+        console.error("[RouteDiag]", e);
+      }
+
+      rd.phase = "done";
+      render();
+    }
 
     // ── Updater ─────────────────────────────────────────────────────
     async function checkForUpdates() { await window.api.updaterCheck(); }
@@ -1583,7 +1638,7 @@
           <div>
             <div style="display:flex;align-items:center;gap:8px">
               <span class="glitch-text" data-text="FORTNITE PC OPTIMIZER" style="font-weight:700;font-size:18px;letter-spacing:0.025em;color:#a78bfa">FORTNITE PC OPTIMIZER</span>
-              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.7.9</span>
+              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.8.0</span>
               <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#0a1a0a;color:#22c55e;border:1px solid #14532d">REAL PINGS</span>
             </div>
             <div class="mono" style="font-size:11px;color:#333">// measuring actual TCP latency to AWS game servers</div>
@@ -1863,6 +1918,101 @@
             <div class="mono" style="font-size:10px;color:#333;margin-top:4px">split tunnel active \u2014 only fortnite traffic routed</div>
           </div>`;
         }
+
+        // ── Route Diagnostic ──
+        const rd = s.routeDiag;
+        const diagServer = SERVERS.find(sv => sv.id === (rd.server || s.best || s.selected || "nae"));
+        html += `<div style="border-radius:8px;padding:12px;margin-bottom:12px;background:#0a0a14;border:1px solid #12121e">
+          <div class="mono" style="font-size:11px;color:#555;margin-bottom:8px;letter-spacing:0.1em">// ROUTE DIAGNOSTIC</div>
+          <div style="font-size:11px;color:#444;margin-bottom:8px">Trace your network path to ${diagServer ? diagServer.flag + " " + diagServer.name : "game servers"}. ${s.tunnelStatus==="connected" ? "Compares your ISP route vs tunnel route." : "Connect the tunnel to see a side-by-side comparison."}</div>
+          <button onclick="runRouteDiagnostic()" ${rd.phase==="tracing"?"disabled":""} style="
+            width:100%;padding:8px;border-radius:6px;font-size:12px;font-weight:600;
+            letter-spacing:0.05em;margin-bottom:8px;transition:all 0.3s;
+            background:${rd.phase==="tracing"?"#1a1a2e":"linear-gradient(135deg,#06b6d4,#0891b2)"};
+            color:${rd.phase==="tracing"?"#555":"#fff"};
+            cursor:${rd.phase==="tracing"?"not-allowed":"pointer"};
+            border:none;
+          ">${rd.phase==="tracing"?'<span class="animate-spin" style="display:inline-block;margin-right:6px">\u{1F504}</span>TRACING ROUTE...':"RUN ROUTE DIAGNOSTIC"}</button>`;
+
+        if (rd.phase === "done" && (rd.directHops.length > 0 || rd.tunnelHops.length > 0)) {
+          const hasBoth = rd.directHops.length > 0 && rd.tunnelHops.length > 0;
+
+          // Ping summary
+          if (rd.directPing !== null) {
+            const diff = hasBoth ? rd.directPing - rd.tunnelPing : 0;
+            const diffColor = diff > 0 ? "#22c55e" : diff < 0 ? "#ef4444" : "#555";
+            const diffLabel = diff > 0 ? `-${diff}ms via tunnel` : diff < 0 ? `+${Math.abs(diff)}ms via tunnel` : "no difference";
+            html += `<div style="display:flex;gap:8px;margin-bottom:8px">
+              <div style="flex:1;border-radius:6px;padding:8px;background:#08080f;border:1px solid #1a1a2e;text-align:center">
+                <div class="mono" style="font-size:9px;color:#555;margin-bottom:2px">DIRECT</div>
+                <div class="mono" style="font-size:16px;font-weight:700;color:${pingColor(rd.directPing)}">${rd.directPing}ms</div>
+                <div class="mono" style="font-size:9px;color:#555">${rd.directHops.length} hops</div>
+              </div>
+              ${hasBoth ? `<div style="flex:1;border-radius:6px;padding:8px;background:#08080f;border:1px solid #1a1a2e;text-align:center">
+                <div class="mono" style="font-size:9px;color:#555">TUNNEL</div>
+                <div class="mono" style="font-size:16px;font-weight:700;color:${pingColor(rd.tunnelPing)}">${rd.tunnelPing}ms</div>
+                <div class="mono" style="font-size:9px;color:#555">${rd.tunnelHops.length} hops</div>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:center">
+                <div class="mono" style="font-size:11px;font-weight:700;color:${diffColor}">${diffLabel}</div>
+              </div>` : ""}
+            </div>`;
+          }
+
+          // Direct route hops
+          if (rd.directHops.length > 0) {
+            const maxP = Math.max(...rd.directHops.map(h => h.ping), 1);
+            html += `<div style="margin-bottom:${hasBoth ? "8" : "0"}px">
+              <div class="mono" style="font-size:10px;color:#555;margin-bottom:4px;letter-spacing:0.1em">\u{1F310} DIRECT ROUTE (${rd.directHops.length} hops)</div>
+              <div style="border-radius:6px;overflow:hidden;background:#08080f;border:1px solid #1a1a2e;max-height:180px;overflow-y:auto">`;
+            for (const hop of rd.directHops) {
+              const bw = Math.min(100, (hop.ping / maxP) * 100);
+              html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;border-bottom:1px solid #0f0f1a;font-size:10px">
+                <span class="mono" style="color:#333;width:18px;text-align:right">${hop.hop}</span>
+                <span class="mono" style="color:#555;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${hop.host}</span>
+                <div style="width:60px;height:4px;background:#111;border-radius:2px;overflow:hidden"><div style="height:100%;width:${bw}%;background:${pingColor(hop.ping)};border-radius:2px"></div></div>
+                <span class="mono" style="color:${pingColor(hop.ping)};width:36px;text-align:right">${hop.ping}ms</span>
+              </div>`;
+            }
+            html += `</div></div>`;
+          }
+
+          // Tunnel route hops
+          if (rd.tunnelHops.length > 0) {
+            const maxP = Math.max(...rd.tunnelHops.map(h => h.ping), 1);
+            html += `<div>
+              <div class="mono" style="font-size:10px;color:#555;margin-bottom:4px;letter-spacing:0.1em">\u{1F6E1}\uFE0F TUNNEL ROUTE (${rd.tunnelHops.length} hops)</div>
+              <div style="border-radius:6px;overflow:hidden;background:#08080f;border:1px solid #1a1a2e;max-height:180px;overflow-y:auto">`;
+            for (const hop of rd.tunnelHops) {
+              const bw = Math.min(100, (hop.ping / maxP) * 100);
+              html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;border-bottom:1px solid #0f0f1a;font-size:10px">
+                <span class="mono" style="color:#333;width:18px;text-align:right">${hop.hop}</span>
+                <span class="mono" style="color:#555;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${hop.host}</span>
+                <div style="width:60px;height:4px;background:#111;border-radius:2px;overflow:hidden"><div style="height:100%;width:${bw}%;background:${pingColor(hop.ping)};border-radius:2px"></div></div>
+                <span class="mono" style="color:${pingColor(hop.ping)};width:36px;text-align:right">${hop.ping}ms</span>
+              </div>`;
+            }
+            html += `</div></div>`;
+          }
+
+          // Verdict
+          if (hasBoth) {
+            const diff = rd.directPing - rd.tunnelPing;
+            const verdictBg = diff > 3 ? "#021a0a" : diff < -3 ? "#1a0505" : "#0d0d1a";
+            const verdictBorder = diff > 3 ? "#14532d" : diff < -3 ? "#331111" : "#1a1a2e";
+            const verdictColor = diff > 3 ? "#22c55e" : diff < -3 ? "#ef4444" : "#eab308";
+            const verdictText = diff > 3
+              ? "Tunnel is faster. Your ISP has suboptimal routing to this server. Keep the tunnel on for competitive play."
+              : diff < -3
+              ? "Tunnel is slower. Your ISP already has a good direct route. The VPN adds overhead here \u2014 consider disabling it for this region."
+              : "No significant difference. Your ISP route is already decent. Tunnel won't hurt but won't help much either.";
+            html += `<div style="margin-top:8px;border-radius:6px;padding:8px;background:${verdictBg};border:1px solid ${verdictBorder}">
+              <div class="mono" style="font-size:10px;color:${verdictColor}">${verdictText}</div>
+            </div>`;
+          }
+        }
+
+        html += `</div>`;
 
         if (s.tunnelError) {
           html += `<div style="border-radius:8px;padding:12px;margin-bottom:12px;background:#1a0505;border:1px solid #331111">
