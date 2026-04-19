@@ -98,40 +98,56 @@ const USELESS_SERVICES = [
 // ── Telemetry Settings ──────────────────────────────────────────────
 const TELEMETRY_TWEAKS = [
   { id: "tele-basic", name: "Set Telemetry to Minimum", desc: "Reduce Windows diagnostic data to minimum required level.",
+    check: 'reg query "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection" /v AllowTelemetry 2>nul', checkValue: "0x0",
     cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection" /v AllowTelemetry /t REG_DWORD /d 0 /f' },
   { id: "tele-feedback", name: "Disable Feedback Notifications", desc: "Stop Windows from asking for feedback during gameplay.",
+    check: 'reg query "HKCU\\SOFTWARE\\Microsoft\\Siuf\\Rules" /v NumberOfSIUFInPeriod 2>nul', checkValue: "0x0",
     cmd: 'reg add "HKCU\\SOFTWARE\\Microsoft\\Siuf\\Rules" /v NumberOfSIUFInPeriod /t REG_DWORD /d 0 /f' },
   { id: "tele-advertising", name: "Disable Advertising ID", desc: "Stop ad tracking. Zero gaming benefit, pure privacy invasion.",
+    check: 'reg query "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo" /v Enabled 2>nul', checkValue: "0x0",
     cmd: 'reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo" /v Enabled /t REG_DWORD /d 0 /f' },
   { id: "tele-activity", name: "Disable Activity History", desc: "Stop Windows from tracking your activity and sending it to Microsoft.",
+    check: 'reg query "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\System" /v EnableActivityFeed 2>nul', checkValue: "0x0",
     cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\System" /v EnableActivityFeed /t REG_DWORD /d 0 /f && reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\System" /v PublishUserActivities /t REG_DWORD /d 0 /f' },
   { id: "tele-location", name: "Disable Location Tracking", desc: "Games don't need GPS. Stop background location polling.",
+    check: 'reg query "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors" /v DisableLocation 2>nul', checkValue: "0x0",
     cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors" /v DisableLocation /t REG_DWORD /d 0 /f' },
   { id: "tele-wifi-sense", name: "Disable WiFi Sense", desc: "Stop auto-sharing WiFi passwords with contacts.",
+    check: 'reg query "HKLM\\SOFTWARE\\Microsoft\\WcmSvc\\wifinetworkmanager\\config" /v AutoConnectAllowedOEM 2>nul', checkValue: "0x0",
     cmd: 'reg add "HKLM\\SOFTWARE\\Microsoft\\WcmSvc\\wifinetworkmanager\\config" /v AutoConnectAllowedOEM /t REG_DWORD /d 0 /f' },
   { id: "tele-error-report", name: "Disable Error Reporting", desc: "Stop Windows Error Reporting from uploading crash data in background.",
+    check: 'reg query "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Error Reporting" /v Disabled 2>nul', checkValue: "0x1",
     cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Error Reporting" /v Disabled /t REG_DWORD /d 1 /f' },
 ];
 
 // ── Visual Effects & Power ──────────────────────────────────────────
 const PERFORMANCE_TWEAKS = [
   { id: "power-ultimate", name: "Ultimate Performance Power Plan", desc: "Forces CPU to max speed at all times. No throttling, no power saving.",
+    check: 'powercfg -getactivescheme 2>nul', checkValue: "e9a42b02-d5df-448d-aa00-03f14749eb61",
     cmd: 'powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>nul & powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61 2>nul || powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c' },
   { id: "visual-perf", name: "Disable Visual Effects", desc: "Kill transparency, animations, shadows — pure performance mode.",
+    check: 'reg query "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects" /v VisualFXSetting 2>nul', checkValue: "0x2",
     cmd: 'reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f && reg add "HKCU\\Control Panel\\Desktop" /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f' },
   { id: "anim-disable", name: "Disable Window Animations", desc: "No more slide/fade animations stealing CPU time.",
+    check: 'reg query "HKCU\\Control Panel\\Desktop\\WindowMetrics" /v MinAnimate 2>nul', checkValue: "0",
     cmd: 'reg add "HKCU\\Control Panel\\Desktop\\WindowMetrics" /v MinAnimate /t REG_SZ /d 0 /f' },
   { id: "transparency", name: "Disable Transparency", desc: "Transparency effects use GPU resources that should go to Fortnite.",
+    check: 'reg query "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" /v EnableTransparency 2>nul', checkValue: "0x0",
     cmd: 'reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f' },
   { id: "game-mode", name: "Enable Game Mode", desc: "Tells Windows to prioritize your game. Reduces background interruptions.",
+    check: 'reg query "HKCU\\SOFTWARE\\Microsoft\\GameBar" /v AutoGameModeEnabled 2>nul', checkValue: "0x1",
     cmd: 'reg add "HKCU\\SOFTWARE\\Microsoft\\GameBar" /v AutoGameModeEnabled /t REG_DWORD /d 1 /f' },
   { id: "game-dvr", name: "Disable Game DVR", desc: "Game DVR records gameplay in background — massive FPS hit. Kill it.",
+    check: 'reg query "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR" /v AppCaptureEnabled 2>nul', checkValue: "0x0",
     cmd: 'reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 0 /f && reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR" /v AllowGameDVR /t REG_DWORD /d 0 /f' },
   { id: "notif-disable", name: "Disable Notifications", desc: "No more toast notifications stealing focus from your game.",
+    check: 'reg query "HKCU\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" /v DisableNotificationCenter 2>nul', checkValue: "0x1",
     cmd: 'reg add "HKCU\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer" /v DisableNotificationCenter /t REG_DWORD /d 1 /f' },
   { id: "bg-apps", name: "Disable Background Apps", desc: "Stop UWP apps from running in background eating resources.",
+    check: 'reg query "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\BackgroundAccessApplications" /v GlobalUserDisabled 2>nul', checkValue: "0x1",
     cmd: 'reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\BackgroundAccessApplications" /v GlobalUserDisabled /t REG_DWORD /d 1 /f' },
   { id: "startup-delay", name: "Remove Startup Delay", desc: "Windows adds a 10 second delay to startup apps. Remove it.",
+    check: 'reg query "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize" /v StartupDelayInMSec 2>nul', checkValue: "0x0",
     cmd: 'reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize" /v StartupDelayInMSec /t REG_DWORD /d 0 /f' },
   { id: "temp-clean", name: "Clean Temp Files", desc: "Purge temp folders. Frees disk space and reduces background I/O.",
     cmd: 'del /q/f/s %TEMP%\\* 2>nul & del /q/f/s C:\\Windows\\Temp\\* 2>nul & del /q/f/s C:\\Windows\\Prefetch\\* 2>nul' },
@@ -166,7 +182,7 @@ class Debloater {
     };
   }
 
-  // Remove a specific bloatware app
+  // Remove a specific bloatware app then verify it's gone
   async removeBloatware(appId) {
     if (!this.isWin) return { success: false, error: "Windows only" };
     const app = BLOATWARE_APPS.find(a => a.id === appId);
@@ -176,7 +192,11 @@ class Debloater {
     // Also prevent reinstall
     await run(`Get-AppxProvisionedPackage -Online | Where-Object {$_.PackageName -like "*${app.pkg}*"} | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue`);
 
-    return { success: true, app: app.name };
+    // Verify removal — check if the package is still installed
+    const verify = await run(`Get-AppxPackage *${app.pkg}* | Select-Object Name | ConvertTo-Json`);
+    const stillInstalled = verify.success && verify.output && verify.output.includes(app.pkg);
+
+    return { success: !stillInstalled, verified: !stillInstalled, app: app.name };
   }
 
   // Remove ALL bloatware at once
@@ -213,7 +233,7 @@ class Debloater {
     };
   }
 
-  // Disable a service
+  // Disable a service then verify it's actually disabled
   async disableService(svcId) {
     if (!this.isWin) return { success: false, error: "Windows only" };
     const svc = USELESS_SERVICES.find(s => s.id === svcId);
@@ -222,7 +242,11 @@ class Debloater {
     const r1 = await runCmd(`sc stop "${svc.svc}" 2>nul`, 10000);
     const r2 = await runCmd(`sc config "${svc.svc}" start=disabled`, 10000);
 
-    return { success: r2.success, service: svc.name, error: r2.error };
+    // Verify: query the service start type
+    const verify = await runCmd(`sc qc "${svc.svc}" 2>nul`, 5000);
+    const verified = verify.success && verify.output.includes("DISABLED");
+
+    return { success: r2.success, verified, service: svc.name, error: r2.error };
   }
 
   // Disable ALL useless services
@@ -235,14 +259,21 @@ class Debloater {
     return results;
   }
 
-  // Apply a telemetry tweak
+  // Apply a telemetry tweak then verify
   async applyTelemetryTweak(tweakId) {
     if (!this.isWin) return { success: false, error: "Windows only" };
     const tweak = TELEMETRY_TWEAKS.find(t => t.id === tweakId);
     if (!tweak) return { success: false, error: "Unknown tweak" };
 
     const result = await runCmd(tweak.cmd, 10000);
-    return { success: result.success, name: tweak.name, error: result.error };
+    let verified = false;
+    if (result.success && tweak.check) {
+      const v = await runCmd(tweak.check);
+      verified = v.success && v.output.includes(tweak.checkValue);
+    } else if (result.success) {
+      verified = true;
+    }
+    return { success: result.success, verified, name: tweak.name, error: result.error };
   }
 
   // Apply ALL telemetry tweaks
@@ -255,14 +286,21 @@ class Debloater {
     return results;
   }
 
-  // Apply a performance tweak
+  // Apply a performance tweak then verify
   async applyPerfTweak(tweakId) {
     if (!this.isWin) return { success: false, error: "Windows only" };
     const tweak = PERFORMANCE_TWEAKS.find(t => t.id === tweakId);
     if (!tweak) return { success: false, error: "Unknown tweak" };
 
     const result = await runCmd(tweak.cmd, 15000);
-    return { success: result.success, name: tweak.name, error: result.error };
+    let verified = false;
+    if (result.success && tweak.check) {
+      const v = await runCmd(tweak.check);
+      verified = v.success && v.output.includes(tweak.checkValue);
+    } else if (result.success) {
+      verified = true;
+    }
+    return { success: result.success, verified, name: tweak.name, error: result.error };
   }
 
   // Apply ALL performance tweaks
@@ -331,6 +369,53 @@ class Debloater {
       services: USELESS_SERVICES,
       telemetry: TELEMETRY_TWEAKS,
       performance: PERFORMANCE_TWEAKS,
+    };
+  }
+
+  // Verify everything — scan bloatware, services, telemetry, and performance tweaks
+  async verifyAll() {
+    if (!this.isWin) return { error: "Windows only" };
+
+    // Check which bloatware is still installed
+    const appScan = await this.scanBloatware();
+    const appsStillInstalled = appScan.apps ? appScan.apps.filter(a => a.installed) : [];
+
+    // Check which services are still running/enabled
+    const svcScan = await this.scanServices();
+    const svcsStillEnabled = svcScan.services ? svcScan.services.filter(s => s.exists && s.startType !== 4 && s.startType !== "Disabled") : [];
+
+    // Check telemetry tweaks
+    const telemetryResults = [];
+    for (const tweak of TELEMETRY_TWEAKS) {
+      if (!tweak.check) { telemetryResults.push({ id: tweak.id, name: tweak.name, status: "no-check" }); continue; }
+      const v = await runCmd(tweak.check);
+      const applied = v.success && v.output.includes(tweak.checkValue);
+      telemetryResults.push({ id: tweak.id, name: tweak.name, status: applied ? "applied" : "not-applied" });
+    }
+
+    // Check performance tweaks
+    const perfResults = [];
+    for (const tweak of PERFORMANCE_TWEAKS) {
+      if (!tweak.check) { perfResults.push({ id: tweak.id, name: tweak.name, status: "no-check" }); continue; }
+      const v = await runCmd(tweak.check);
+      const applied = v.success && v.output.includes(tweak.checkValue);
+      perfResults.push({ id: tweak.id, name: tweak.name, status: applied ? "applied" : "not-applied" });
+    }
+
+    const telApplied = telemetryResults.filter(t => t.status === "applied").length;
+    const perfApplied = perfResults.filter(t => t.status === "applied").length;
+
+    return {
+      bloatware: { total: BLOATWARE_APPS.length, stillInstalled: appsStillInstalled.length, apps: appsStillInstalled },
+      services: { total: USELESS_SERVICES.length, stillEnabled: svcsStillEnabled.length, services: svcsStillEnabled },
+      telemetry: { total: TELEMETRY_TWEAKS.length, applied: telApplied, tweaks: telemetryResults },
+      performance: { total: PERFORMANCE_TWEAKS.length, applied: perfApplied, tweaks: perfResults },
+      summary: {
+        bloatwareRemoved: BLOATWARE_APPS.length - appsStillInstalled.length,
+        servicesDisabled: USELESS_SERVICES.length - svcsStillEnabled.length,
+        telemetryApplied: telApplied,
+        perfApplied: perfApplied,
+      },
     };
   }
 }

@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld("api", {
   debloatApplyPerf: (id) => ipcRenderer.invoke("debloat-apply-perf", id),
   debloatApplyAllPerf: () => ipcRenderer.invoke("debloat-apply-all-perf"),
   debloatFullNuke: () => ipcRenderer.invoke("debloat-full-nuke"),
+  debloatVerifyAll: () => ipcRenderer.invoke("debloat-verify-all"),
   debloatScanAllApps: () => ipcRenderer.invoke("debloat-scan-all-apps"),
   // ── Gaming Tweaks ──
   tweaksGetCategories: () => ipcRenderer.invoke("tweaks-get-categories"),
@@ -49,6 +50,7 @@ contextBridge.exposeInMainWorld("api", {
   tweaksApplyCategory: (catId) => ipcRenderer.invoke("tweaks-apply-category", catId),
   tweaksApplyAll: () => ipcRenderer.invoke("tweaks-apply-all"),
   tweaksGetApplied: () => ipcRenderer.invoke("tweaks-get-applied"),
+  tweaksVerifyAll: () => ipcRenderer.invoke("tweaks-verify-all"),
   // ── Hardware / Overclock ──
   hwDetect: () => ipcRenderer.invoke("hw-detect"),
   hwStats: () => ipcRenderer.invoke("hw-stats"),

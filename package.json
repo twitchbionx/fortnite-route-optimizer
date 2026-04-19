@@ -1,6 +1,6 @@
 {
   "name": "fortnite-route-optimizer",
-  "version": "3.5.5",
+  "version": "3.5.6",
   "description": "The ultimate Fortnite PC optimization suite",
   "main": "main.js",
   "scripts": {

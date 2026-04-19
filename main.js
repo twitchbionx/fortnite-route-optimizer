@@ -376,6 +376,7 @@ ipcMain.handle("debloat-apply-all-telemetry", async () => await debloater.applyA
 ipcMain.handle("debloat-apply-perf", async (_e, id) => await debloater.applyPerfTweak(id));
 ipcMain.handle("debloat-apply-all-perf", async () => await debloater.applyAllPerf());
 ipcMain.handle("debloat-full-nuke", async () => await debloater.fullDebloat());
+ipcMain.handle("debloat-verify-all", async () => await debloater.verifyAll());
 ipcMain.handle("debloat-scan-all-apps", async () => await debloater.scanAllApps());
 
 // ── Gaming Tweaks IPC Handlers ───────────────────────────────────
@@ -384,6 +385,7 @@ ipcMain.handle("tweaks-apply", async (_e, tweakId) => await gamingTweaks.applyTw
 ipcMain.handle("tweaks-apply-category", async (_e, catId) => await gamingTweaks.applyCategory(catId));
 ipcMain.handle("tweaks-apply-all", async () => await gamingTweaks.applyAll());
 ipcMain.handle("tweaks-get-applied", () => gamingTweaks.getApplied());
+ipcMain.handle("tweaks-verify-all", async () => await gamingTweaks.verifyAll());
 
 // ── Hardware / Overclock IPC Handlers ────────────────────────────
 ipcMain.handle("hw-detect", async () => await hardware.detectHardware());
