@@ -134,18 +134,20 @@ class DependencyManager {
   async checkAll() {
     if (!this.isWin) return { error: "Windows only" };
 
-    const [wireguard, nvidiaSmi, scewin] = await Promise.all([
+    const [wireguard, nvidiaSmi, scewin, hwinfo] = await Promise.all([
       this.checkWireGuard(),
       this.checkNvidiaSmi(),
       this.checkSceWin(),
+      this.checkHWiNFO(),
     ]);
 
     return {
       wireguard,
       nvidiaSmi,
       scewin,
-      allInstalled: wireguard.installed && nvidiaSmi.installed,
-      missingCount: [wireguard, nvidiaSmi, scewin].filter(d => !d.installed).length,
+      hwinfo,
+      allInstalled: wireguard.installed && nvidiaSmi.installed && hwinfo.installed,
+      missingCount: [wireguard, nvidiaSmi, scewin, hwinfo].filter(d => !d.installed).length,
     };
   }
 
@@ -464,6 +466,69 @@ class DependencyManager {
     return null;
   }
 
+  // ── HWiNFO64 ────────────────────────────────────────────────────
+  async checkHWiNFO() {
+    const paths = [
+      "C:\\Program Files\\HWiNFO64\\HWiNFO64.exe",
+      "C:\\Program Files (x86)\\HWiNFO64\\HWiNFO64.exe",
+      path.join(os.homedir(), "AppData\\Local\\Programs\\HWiNFO64\\HWiNFO64.exe"),
+      path.join(process.env.LOCALAPPDATA || "", "HWiNFO64\\HWiNFO64.exe"),
+    ];
+
+    for (const p of paths) {
+      try { if (fs.existsSync(p)) return { installed: true, path: p, name: "HWiNFO64", id: "hwinfo" }; } catch(e) {}
+    }
+
+    // Check PATH
+    try {
+      const r = await runCmd("where HWiNFO64.exe 2>nul", 5000);
+      if (r.success && r.output) return { installed: true, path: r.output.split("\n")[0].trim(), name: "HWiNFO64", id: "hwinfo" };
+    } catch(e) {}
+
+    return {
+      installed: false,
+      name: "HWiNFO64",
+      id: "hwinfo",
+      desc: "Hardware sensor monitor — provides accurate CPU/GPU temps, voltages, clocks & fan speeds",
+      downloadUrl: "https://www.hwinfo.com/download/",
+      size: "~8 MB",
+      required: false,
+      feature: "Hardware Monitoring & AI Overclock",
+      installNote: "Provides real-time sensor data for accurate overclocking. Enable 'Shared Memory Support' in settings.",
+    };
+  }
+
+  async installHWiNFO(onProgress) {
+    if (onProgress) onProgress({ status: "installing", message: "Installing HWiNFO64 via winget..." });
+
+    // Try winget first (cleanest install)
+    const winget = await runCmd("winget install REALiX.HWiNFO --silent --accept-package-agreements --accept-source-agreements 2>nul", 300000);
+    if (winget.success) {
+      const check = await this.checkHWiNFO();
+      if (check.installed) return { success: true, path: check.path };
+    }
+
+    // Fallback: download from hwinfo.com
+    if (onProgress) onProgress({ status: "downloading", message: "Downloading HWiNFO64 installer...", percent: 0 });
+    const destPath = path.join(DOWNLOADS_DIR, "hwinfo64-setup.exe");
+    const dl = await downloadFile("https://www.sac.sk/download/utildiag/hwi_812.exe", destPath, (p) => {
+      if (onProgress) onProgress({ status: "downloading", message: `Downloading HWiNFO64... ${p.downloadedMB}/${p.totalMB} MB`, percent: p.percent });
+    });
+
+    if (dl.success) {
+      if (onProgress) onProgress({ status: "installing", message: "Installing HWiNFO64..." });
+      const installerPath = dl.path || destPath;
+      await runInstallerElevated(installerPath, "", true);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    const check = await this.checkHWiNFO();
+    return {
+      success: check.installed,
+      error: check.installed ? null : "Could not auto-install HWiNFO64. Download manually from https://www.hwinfo.com/download/",
+    };
+  }
+
   // ── Install all missing dependencies ────────────────────────────
   async installAll(onProgress) {
     const status = await this.checkAll();
@@ -496,6 +561,15 @@ class DependencyManager {
       results.scewin = { success: true, skipped: true };
     }
 
+    if (!status.hwinfo.installed) {
+      if (onProgress) onProgress({ dep: "hwinfo", status: "installing" });
+      results.hwinfo = await this.installHWiNFO((p) => {
+        if (onProgress) onProgress({ dep: "hwinfo", ...p });
+      });
+    } else {
+      results.hwinfo = { success: true, skipped: true };
+    }
+
     return results;
   }
 
@@ -505,6 +579,7 @@ class DependencyManager {
       case "wireguard": return await this.installWireGuard(onProgress);
       case "nvidia-smi": return await this.installNvidiaSmi(onProgress);
       case "scewin": return await this.installSceWin(onProgress);
+      case "hwinfo": return await this.installHWiNFO(onProgress);
       default: return { success: false, error: "Unknown dependency: " + depId };
     }
   }

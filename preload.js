@@ -72,6 +72,9 @@ contextBridge.exposeInMainWorld("api", {
   hwAiAutoOC: (opts) => ipcRenderer.invoke("hw-ai-auto-oc", opts),
   hwAiProgress: () => ipcRenderer.invoke("hw-ai-progress"),
   hwAiStop: () => ipcRenderer.invoke("hw-ai-stop"),
+  hwHwinfoStatus: () => ipcRenderer.invoke("hw-hwinfo-status"),
+  hwHwinfoSensors: () => ipcRenderer.invoke("hw-hwinfo-sensors"),
+  hwEnhancedStats: () => ipcRenderer.invoke("hw-enhanced-stats"),
   // ── BIOS ──
   biosInfo: () => ipcRenderer.invoke("bios-info"),
   biosHidden: () => ipcRenderer.invoke("bios-hidden"),
@@ -83,5 +86,4 @@ contextBridge.exposeInMainWorld("api", {
   depsCheckAll: () => ipcRenderer.invoke("deps-check-all"),
   depsInstall: (depId) => ipcRenderer.invoke("deps-install", depId),
   depsInstallAll: () => ipcRenderer.invoke("deps-install-all"),
-  onDepsProgress: (callback) => ipcRenderer.on("deps-progress", (_e, data) => callback(data)),
-});
+  onDepsProgre

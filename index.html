@@ -1433,6 +1433,7 @@
         if (!s.deps.wireguard.installed) missing.push(s.deps.wireguard);
         if (!s.deps.nvidiaSmi.installed) missing.push(s.deps.nvidiaSmi);
         if (!s.deps.scewin.installed) missing.push(s.deps.scewin);
+        if (s.deps.hwinfo && !s.deps.hwinfo.installed) missing.push(s.deps.hwinfo);
 
         html += `<div style="padding:10px 16px;background:linear-gradient(135deg,#1a0a2e,#0d0520);border:1px solid #2e1065;border-radius:8px;margin-bottom:12px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -1488,7 +1489,7 @@
           <div>
             <div style="display:flex;align-items:center;gap:8px">
               <span class="glitch-text" data-text="FORTNITE PC OPTIMIZER" style="font-weight:700;font-size:18px;letter-spacing:0.025em;color:#a78bfa">FORTNITE PC OPTIMIZER</span>
-              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.4.7</span>
+              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.4.2</span>
               <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#0a1a0a;color:#22c55e;border:1px solid #14532d">REAL PINGS</span>
             </div>
             <div class="mono" style="font-size:11px;color:#333">// measuring actual TCP latency to AWS game servers</div>
@@ -2648,57 +2649,4 @@ AllowedIPs = ...">${s.tunnelConfig || ""}</textarea>
       if (s.debloatConfirm === "nuke") {
         html += `<div class="confirm-overlay" onclick="cancelConfirm()">
           <div class="confirm-box" onclick="event.stopPropagation()">
-            <div style="font-size:48px;margin-bottom:12px">\u2622\uFE0F</div>
-            <div style="font-size:18px;font-weight:700;color:#ef4444;margin-bottom:8px">NUCLEAR OPTION</div>
-            <div style="font-size:13px;color:#888;margin-bottom:24px">This will remove ALL bloatware apps, disable ALL unnecessary services, apply ALL telemetry blocks, and ALL performance tweaks. This cannot be undone.</div>
-            <div style="display:flex;gap:12px;justify-content:center">
-              <button onclick="cancelConfirm()" class="action-btn ghost" style="padding:10px 24px">CANCEL</button>
-              <button onclick="debloatFullNuke()" class="action-btn red" style="padding:10px 24px">NUKE EVERYTHING</button>
-            </div>
-          </div>
-        </div>`;
-      }
-
-      if (s.biosConfirm === "reboot") {
-        html += `<div class="confirm-overlay" onclick="cancelConfirm()">
-          <div class="confirm-box" onclick="event.stopPropagation()">
-            <div style="font-size:48px;margin-bottom:12px">\u{1F504}</div>
-            <div style="font-size:18px;font-weight:700;color:#eab308;margin-bottom:8px">REBOOT TO BIOS</div>
-            <div style="font-size:13px;color:#888;margin-bottom:24px">Your PC will restart immediately and boot into BIOS/UEFI settings. Save any open work first.</div>
-            <div style="display:flex;gap:12px;justify-content:center">
-              <button onclick="cancelConfirm()" class="action-btn ghost" style="padding:10px 24px">CANCEL</button>
-              <button onclick="doBiosReboot()" class="action-btn orange" style="padding:10px 24px">REBOOT NOW</button>
-            </div>
-          </div>
-        </div>`;
-      }
-
-      app.innerHTML = html;
-    }
-
-    // ── Init ─────────────────────────────────────────────────────────
-    async function init() {
-      try {
-        state.networkInfo = await window.api.getNetworkInfo();
-        await refreshTunnelStatus();
-        await loadTunnelConfig();
-        if (window.api.updaterStatus) {
-          const us = await window.api.updaterStatus();
-          if (us) state.update = us;
-        }
-      } catch(e) {}
-      render();
-
-      // Preload data for other sections in background
-      setTimeout(async () => {
-        try { await checkDeps(); } catch(e) {}
-        try { await loadDebloatData(); } catch(e) {}
-        try { await loadTweaks(); } catch(e) {}
-        try { await loadHwData(); } catch(e) {}
-        try { await loadBiosData(); } catch(e) {}
-      }, 500);
-    }
-    init();
-  </script>
-</body>
-</html>
+         

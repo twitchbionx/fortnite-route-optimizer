@@ -36,6 +36,147 @@ function runPS(cmd, timeout = 15000) {
   });
 }
 
+// ── HWiNFO64 Integration ──────────────────────────────────────────
+// Reads accurate sensor data from HWiNFO64 via registry (when running
+// with "Shared Memory Support" enabled) or via its CLI report mode.
+// Provides: CPU temp, voltage, clock per-core, GPU temp/clock/load,
+// fan speeds, VRM temps, memory temps, power draw.
+// ────────────────────────────────────────────────────────────────────
+class HWiNFOReader {
+  constructor() {
+    this.available = false;
+    this.hwInfoPath = null;
+    this._detect();
+  }
+
+  _detect() {
+    const paths = [
+      "C:\\Program Files\\HWiNFO64\\HWiNFO64.exe",
+      "C:\\Program Files (x86)\\HWiNFO64\\HWiNFO64.exe",
+      path.join(os.homedir(), "AppData\\Local\\Programs\\HWiNFO64\\HWiNFO64.exe"),
+      path.join(process.env.LOCALAPPDATA || "", "HWiNFO64\\HWiNFO64.exe"),
+    ];
+    for (const p of paths) {
+      try {
+        if (fs.existsSync(p)) {
+          this.hwInfoPath = p;
+          this.available = true;
+          return;
+        }
+      } catch(e) {}
+    }
+    // Check PATH / winget
+    try {
+      const r = require("child_process").execSync("where HWiNFO64.exe 2>nul", { timeout: 5000 }).toString().trim();
+      if (r) { this.hwInfoPath = r.split("\n")[0].trim(); this.available = true; }
+    } catch(e) {}
+  }
+
+  redetect() {
+    this.available = false;
+    this.hwInfoPath = null;
+    this._detect();
+    return { available: this.available, path: this.hwInfoPath };
+  }
+
+  // Read sensor values from HWiNFO registry (requires HWiNFO running with Shared Memory enabled)
+  async readSensors() {
+    // HWiNFO writes sensor data to HKCU\Software\HWiNFO64\VSB when shared memory is enabled
+    const result = await runPS(`
+      $base = 'HKCU:\\Software\\HWiNFO64\\VSB'
+      if (!(Test-Path $base)) { Write-Output '{"error":"HWiNFO registry not found. Is HWiNFO64 running with Shared Memory enabled?"}'; return }
+      $sensors = @{}
+      $values = Get-ItemProperty -Path $base -ErrorAction SilentlyContinue
+      if ($values) {
+        $i = 0
+        while ($true) {
+          $label = $values."Label$i"
+          $value = $values."Value$i"
+          $valueRaw = $values."ValueRaw$i"
+          if ($null -eq $label) { break }
+          $sensors[$label] = @{ value = $value; raw = $valueRaw }
+          $i++
+        }
+      }
+      $sensors | ConvertTo-Json -Depth 3
+    `, 10000);
+
+    if (!result.success || !result.output) {
+      return { available: false, error: "Could not read HWiNFO sensors" };
+    }
+
+    try {
+      const data = JSON.parse(result.output);
+      if (data.error) return { available: false, error: data.error };
+      return { available: true, sensors: this._parseSensors(data) };
+    } catch(e) {
+      return { available: false, error: "Failed to parse HWiNFO data" };
+    }
+  }
+
+  _parseSensors(raw) {
+    const sensors = {
+      cpuTemp: null,
+      cpuPackageTemp: null,
+      cpuVoltage: null,
+      cpuClock: null,
+      cpuPower: null,
+      gpuTemp: null,
+      gpuClock: null,
+      gpuMemClock: null,
+      gpuLoad: null,
+      gpuPower: null,
+      gpuVram: null,
+      ramTemp: null,
+      vrmTemp: null,
+      fanSpeeds: {},
+      allSensors: raw,
+    };
+
+    for (const [label, data] of Object.entries(raw)) {
+      const lbl = label.toLowerCase();
+      const val = parseFloat(data.raw || data.value);
+      if (isNaN(val)) continue;
+
+      // CPU
+      if (lbl.includes("cpu") && lbl.includes("package") && lbl.includes("temp")) sensors.cpuPackageTemp = val;
+      else if (lbl.includes("cpu") && lbl.includes("temp") && !sensors.cpuTemp) sensors.cpuTemp = val;
+      else if (lbl.includes("cpu") && lbl.includes("vcore") || (lbl.includes("cpu") && lbl.includes("voltage"))) sensors.cpuVoltage = val;
+      else if (lbl.includes("cpu") && lbl.includes("clock") && !lbl.includes("ring")) sensors.cpuClock = val;
+      else if (lbl.includes("cpu") && lbl.includes("package") && lbl.includes("power")) sensors.cpuPower = val;
+      // GPU
+      else if (lbl.includes("gpu") && lbl.includes("temp") && !lbl.includes("hot")) sensors.gpuTemp = val;
+      else if (lbl.includes("gpu") && lbl.includes("clock") && !lbl.includes("mem")) sensors.gpuClock = val;
+      else if (lbl.includes("gpu") && lbl.includes("mem") && lbl.includes("clock")) sensors.gpuMemClock = val;
+      else if (lbl.includes("gpu") && lbl.includes("load") || (lbl.includes("gpu") && lbl.includes("usage"))) sensors.gpuLoad = val;
+      else if (lbl.includes("gpu") && lbl.includes("power")) sensors.gpuPower = val;
+      else if (lbl.includes("gpu") && lbl.includes("memory") && lbl.includes("used")) sensors.gpuVram = val;
+      // RAM
+      else if (lbl.includes("dimm") && lbl.includes("temp") || (lbl.includes("memory") && lbl.includes("temp"))) sensors.ramTemp = val;
+      // VRM
+      else if (lbl.includes("vrm") && lbl.includes("temp")) sensors.vrmTemp = val;
+      // Fans
+      else if (lbl.includes("fan") && (lbl.includes("rpm") || lbl.includes("speed"))) sensors.fanSpeeds[label] = val;
+    }
+
+    return sensors;
+  }
+
+  // Generate a quick report via HWiNFO CLI
+  async quickReport() {
+    if (!this.available) return { success: false, error: "HWiNFO64 not installed" };
+    const reportPath = path.join(os.homedir(), ".fn-optimizer", "hwinfo-report.csv");
+    const r = await runCmd(`"${this.hwInfoPath}" -c"${reportPath}" -max_time=5`, 15000);
+    try {
+      if (fs.existsSync(reportPath)) {
+        const csv = fs.readFileSync(reportPath, "utf8");
+        return { success: true, data: csv };
+      }
+    } catch(e) {}
+    return { success: false, error: "Report generation failed" };
+  }
+}
+
 // ── SceWin (AMISCE) Integration ────────────────────────────────────
 // SceWin / AMI Setup Configuration Editor reads/writes BIOS settings
 // from within Windows.  Requires the AMISCE binary (SCEWNX64.exe).
@@ -986,6 +1127,7 @@ class HardwareMonitor {
     this.isWin = os.platform() === "win32";
     this.nvidiaSmiPath = null;
     this.hardwareInfo = null;
+    this.hwinfo = new HWiNFOReader();
     this.detectNvidiaSmi();
     this.scewin = new SceWinManager();
     this.aiEngine = new AIOverclockEngine(this, this.scewin);
@@ -1500,6 +1642,47 @@ class HardwareMonitor {
   }
 
   // ── SceWin / AI Overclock Integration ─────────────────────────────
+
+  // ── HWiNFO64 Integration ─────────────────────────────────────────
+
+  getHwinfoStatus() {
+    this.hwinfo.redetect();
+    return { available: this.hwinfo.available, path: this.hwinfo.hwInfoPath };
+  }
+
+  async readHwinfoSensors() {
+    return await this.hwinfo.readSensors();
+  }
+
+  // Enhanced stats that prefer HWiNFO data when available
+  async getEnhancedStats() {
+    const [basicStats, hwinfoData] = await Promise.all([
+      this.getStats(),
+      this.hwinfo.readSensors(),
+    ]);
+
+    if (hwinfoData.available && hwinfoData.sensors) {
+      const s = hwinfoData.sensors;
+      // Override/enhance with HWiNFO's more accurate readings
+      if (s.cpuPackageTemp || s.cpuTemp) basicStats.cpuTemp = s.cpuPackageTemp || s.cpuTemp;
+      if (s.cpuVoltage) basicStats.cpuVoltage = s.cpuVoltage;
+      if (s.cpuClock) basicStats.cpuClock = s.cpuClock;
+      if (s.cpuPower) basicStats.cpuPower = s.cpuPower;
+      if (s.gpuTemp) basicStats.gpuTemp = s.gpuTemp;
+      if (s.gpuClock) basicStats.gpuCoreClk = s.gpuClock;
+      if (s.gpuMemClock) basicStats.gpuMemClk = s.gpuMemClock;
+      if (s.gpuLoad) basicStats.gpuLoad = s.gpuLoad;
+      if (s.gpuPower) basicStats.gpuPower = s.gpuPower;
+      if (s.ramTemp) basicStats.ramTemp = s.ramTemp;
+      if (s.vrmTemp) basicStats.vrmTemp = s.vrmTemp;
+      basicStats.fanSpeeds = s.fanSpeeds;
+      basicStats.hwinfoActive = true;
+    } else {
+      basicStats.hwinfoActive = false;
+    }
+
+    return basicStats;
+  }
 
   getScewinStatus() {
     // Re-detect every time this is called so UI stays in sync

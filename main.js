@@ -407,8 +407,11 @@ ipcMain.handle("hw-scewin-export", async () => await hardware.scewin.exportCurre
 ipcMain.handle("hw-scewin-backup", async () => await hardware.scewin.backupSettings());
 ipcMain.handle("hw-scewin-restore", async () => await hardware.scewin.restoreBackup());
 ipcMain.handle("hw-ai-auto-oc", async (_, opts) => await hardware.aiAutoOC(opts));
-ipcMain.handle("hw-ai-progress", () => hardware.getAIProgress());
-ipcMain.handle("hw-ai-stop", () => hardware.stopAIOC());
+ipcMain.handle("hw-ai-progress", () => hardware.aiProgress());
+ipcMain.handle("hw-ai-stop", () => hardware.aiStop());
+ipcMain.handle("hw-hwinfo-status", () => hardware.getHwinfoStatus());
+ipcMain.handle("hw-hwinfo-sensors", async () => await hardware.readHwinfoSensors());
+ipcMain.handle("hw-enhanced-stats", async () => await hardware.getEnhancedStats());
 
 // ── BIOS IPC Handlers ────────────────────────────────────────────
 ipcMain.handle("bios-info", async () => await biosHelper.getBIOSInfo());
@@ -421,19 +424,4 @@ ipcMain.handle("bios-disable-hyperv", async () => await biosHelper.disableHyperV
 // ── Installer / Dependency IPC Handlers ─────────────────────────
 ipcMain.handle("deps-check-all", async () => await installer.checkAll());
 ipcMain.handle("deps-install", async (_e, depId) => {
-  return await installer.installDep(depId, (progress) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("deps-progress", { depId, ...progress });
-    }
-  });
-});
-ipcMain.handle("deps-install-all", async () => {
-  return await installer.installAll((progress) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("deps-progress", progress);
-    }
-  });
-});
-
-// Load config on startup
-tunnel.loadConfig();
+  return await installer.installDep(depId, (progress) => 
