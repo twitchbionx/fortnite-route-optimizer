@@ -99,6 +99,8 @@ class HWiNFOReader {
   }
 
   // Force-enable Shared Memory and ensure HWiNFO is running with it active
+  // NOTE: HWiNFO64 Free does NOT support CLI flags (-sm, /csv, etc) — Pro only.
+  // We configure shared memory via registry + INI, then launch normally.
   async ensureRunning() {
     if (!this.available) this.redetect();
 
@@ -120,115 +122,123 @@ class HWiNFOReader {
       return { launched: false, error: "HWiNFO64 not found — install it from the Dependencies tab" };
     }
 
-    // Enable Shared Memory via registry BEFORE launching
+    // Enable Shared Memory + Sensors-Only mode via registry BEFORE launching
     await runPS(`
       $paths = @('HKCU:\\Software\\HWiNFO64', 'HKCU:\\Software\\HWiNFO64\\VSB')
       foreach ($p in $paths) { if (!(Test-Path $p)) { New-Item -Path $p -Force | Out-Null } }
       Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsSM' -Value 1 -Type DWord -Force
       Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsOnly' -Value 1 -Type DWord -Force
       Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'AutoStart' -Value 1 -Type DWord -Force
+      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'MinimizeMainWindow' -Value 1 -Type DWord -Force
+      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'MinimizeSensors' -Value 1 -Type DWord -Force
+      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'ShowWelcome' -Value 0 -Type DWord -Force
     `, 5000);
 
-    // Write INI file next to the EXE (for both portable and installed versions)
-    try {
-      const iniPath = path.join(path.dirname(this.hwInfoPath), "HWiNFO64.INI");
-      const iniContent = "[Settings]\nSensorsSM=1\nSensorsOnly=1\nMinimize=1\nAutoStart=1\nShowWelcome=0\n";
-      fs.writeFileSync(iniPath, iniContent);
-    } catch(e) {} // may fail if Program Files (need admin)
+    // Write INI file next to the EXE (works for portable versions)
+    // Also write to %APPDATA%/HWiNFO64 for installed versions
+    const iniContent = "[Settings]\nSensorsSM=1\nSensorsOnly=1\nMinimize=1\nAutoStart=1\nShowWelcome=0\nMinimizeMainWindow=1\nMinimizeSensors=1\n";
+    const iniLocations = [
+      path.join(path.dirname(this.hwInfoPath), "HWiNFO64.INI"),
+      path.join(process.env.APPDATA || "", "HWiNFO64", "HWiNFO64.INI"),
+    ];
+    for (const iniPath of iniLocations) {
+      try {
+        const iniDir = path.dirname(iniPath);
+        if (!fs.existsSync(iniDir)) fs.mkdirSync(iniDir, { recursive: true });
+        fs.writeFileSync(iniPath, iniContent);
+      } catch(e) {} // may fail in Program Files without admin
+    }
 
-    // Kill any existing HWiNFO so it restarts with our settings
+    // Kill any existing HWiNFO so it restarts with our new settings
     const running = await this.isRunning();
     if (running) {
       await runCmd('taskkill /IM HWiNFO64.exe /F 2>nul', 5000);
       await new Promise(r => setTimeout(r, 3000));
     }
 
-    // Launch with explicit shared memory flags
-    // HWiNFO64 supports: -sm (shared memory), -lSENSORSONLY (sensors only)
-    const launchCmds = [
-      `Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -ArgumentList '-sm -lSENSORSONLY' -WindowStyle Minimized`,
-      `Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -ArgumentList '-sm' -WindowStyle Minimized`,
-      `Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -WindowStyle Minimized`,
-    ];
+    // Launch HWiNFO normally — NO CLI flags (Free version doesn't support them)
+    // The registry + INI settings above will make it start in sensors-only mode
+    // with shared memory enabled automatically
+    await runPS(`Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -WindowStyle Minimized`, 5000);
 
-    for (const cmd of launchCmds) {
-      await runPS(cmd, 5000);
-      // Wait up to 15 seconds for VSB data
-      for (let i = 0; i < 15; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        const check = await runPS(`
-          $base = 'HKCU:\\Software\\HWiNFO64\\VSB'
-          if (!(Test-Path $base)) { Write-Output 'NO_VSB'; return }
-          $v = Get-ItemProperty -Path $base -ErrorAction SilentlyContinue
-          if ($v.Label0) { Write-Output "HAS_DATA:$($v.Label0)" } else { Write-Output 'NO_DATA' }
-        `, 3000);
-        if (check.success && check.output.includes("HAS_DATA")) {
-          await new Promise(r => setTimeout(r, 2000));
-          return { launched: true, path: this.hwInfoPath, hasData: true };
-        }
+    // Wait up to 30 seconds for VSB data to appear
+    // HWiNFO Free shows a welcome/nag screen that the user may need to click through
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const check = await runPS(`
+        $base = 'HKCU:\\Software\\HWiNFO64\\VSB'
+        if (!(Test-Path $base)) { Write-Output 'NO_VSB'; return }
+        $v = Get-ItemProperty -Path $base -ErrorAction SilentlyContinue
+        if ($v.Label0) { Write-Output "HAS_DATA:$($v.Label0)" } else { Write-Output 'NO_DATA' }
+      `, 3000);
+      if (check.success && check.output.includes("HAS_DATA")) {
+        await new Promise(r => setTimeout(r, 2000));
+        return { launched: true, path: this.hwInfoPath, hasData: true };
       }
-      // This launch method didn't work, kill and try next
-      await runCmd('taskkill /IM HWiNFO64.exe /F 2>nul', 5000);
-      await new Promise(r => setTimeout(r, 2000));
     }
 
-    return { launched: true, path: this.hwInfoPath, hasData: false, warning: "HWiNFO started but Shared Memory not active. You may need to enable it manually: open HWiNFO64 → Settings → check 'Shared Memory Support'" };
+    // Check if HWiNFO is at least running (user may need to click through welcome screen)
+    const stillRunning = await this.isRunning();
+    if (stillRunning) {
+      return { launched: true, path: this.hwInfoPath, hasData: false, warning: "HWiNFO is running but Shared Memory data not detected yet. Please check: (1) Click through any welcome/nag screen in HWiNFO, (2) Go to Settings → check 'Shared Memory Support', (3) Make sure sensors are running (not just the summary)" };
+    }
+
+    return { launched: true, path: this.hwInfoPath, hasData: false, warning: "HWiNFO was launched but may have closed. Open HWiNFO64 manually → Settings → enable 'Shared Memory Support' → run Sensors Only" };
   }
 
-  // Fallback: read sensor data via HWiNFO CSV report mode (works without shared memory)
-  async readSensorsCSV() {
-    if (!this.available || !this.hwInfoPath) return { available: false, error: "HWiNFO64 not found" };
-
-    const csvPath = path.join(os.homedir(), ".fn-optimizer", "hwinfo-sensors.csv");
-    try { fs.unlinkSync(csvPath); } catch(e) {}
-
-    // Run HWiNFO briefly to capture a CSV snapshot
-    const r = await runCmd(`"${this.hwInfoPath}" /csv="${csvPath}" /maxtime=3`, 15000);
-
-    try {
-      if (fs.existsSync(csvPath)) {
-        const raw = fs.readFileSync(csvPath, "utf8");
-        if (raw.length > 50) {
-          return { available: true, sensors: this._parseCSVSensors(raw), source: "CSV-report" };
-        }
-      }
-    } catch(e) {}
-    return { available: false, error: "CSV report not generated" };
-  }
-
-  _parseCSVSensors(csv) {
+  // Enhanced WMI + nvidia-smi fallback for when HWiNFO VSB isn't available
+  // This gets real temps/clocks from the OS and GPU driver directly
+  async readSensorsDirect() {
     const sensors = {
       cpuTemp: null, cpuPackageTemp: null, cpuVoltage: null, cpuClock: null,
       cpuPower: null, gpuTemp: null, gpuClock: null, gpuMemClock: null,
       gpuLoad: null, gpuPower: null, vrmTemp: null, fanSpeeds: {},
     };
 
-    const lines = csv.split("\n");
-    if (lines.length < 2) return sensors;
+    // CPU temp: try multiple WMI sources
+    const tempResult = await runPS(`
+      $temp = $null
+      # Method 1: MSAcpi_ThermalZoneTemperature (most common)
+      try {
+        $t = Get-CimInstance MSAcpi_ThermalZoneTemperature -Namespace root/wmi -ErrorAction Stop | Select-Object -First 1
+        if ($t -and $t.CurrentTemperature -gt 2000) { $temp = [math]::Round(($t.CurrentTemperature - 2732) / 10, 1) }
+      } catch {}
+      # Method 2: Win32_TemperatureProbe
+      if (!$temp -or $temp -le 0) {
+        try {
+          $t2 = Get-CimInstance Win32_TemperatureProbe -ErrorAction Stop | Select-Object -First 1
+          if ($t2 -and $t2.CurrentReading -gt 0) { $temp = $t2.CurrentReading }
+        } catch {}
+      }
+      # CPU clock from Win32_Processor
+      $clock = $null
+      try {
+        $p = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        $clock = $p.CurrentClockSpeed
+      } catch {}
+      @{ temp = $temp; clock = $clock } | ConvertTo-Json
+    `, 10000);
 
-    // CSV has headers on first line, values on subsequent lines
-    const headers = lines[0].split(",").map(h => h.trim().replace(/"/g, ""));
-    const lastDataLine = lines[lines.length - 1].trim() || lines[lines.length - 2]?.trim();
-    if (!lastDataLine) return sensors;
-    const values = lastDataLine.split(",").map(v => v.trim().replace(/"/g, ""));
+    try {
+      const data = JSON.parse(tempResult.output);
+      if (data.temp && data.temp > 0) sensors.cpuTemp = data.temp;
+      if (data.clock && data.clock > 0) sensors.cpuClock = data.clock;
+    } catch(e) {}
 
-    for (let i = 0; i < headers.length; i++) {
-      const h = headers[i].toLowerCase();
-      const val = parseFloat(values[i]);
-      if (isNaN(val)) continue;
-
-      if (h.includes("cpu") && h.includes("package") && h.includes("temp")) sensors.cpuPackageTemp = val;
-      else if (h.includes("cpu") && h.includes("temp") && !sensors.cpuTemp) sensors.cpuTemp = val;
-      else if (h.includes("vcore") || (h.includes("cpu") && h.includes("voltage"))) sensors.cpuVoltage = val;
-      else if (h.includes("cpu") && h.includes("clock") && !h.includes("ring")) sensors.cpuClock = val;
-      else if (h.includes("cpu") && h.includes("package") && h.includes("power")) sensors.cpuPower = val;
-      else if (h.includes("gpu") && h.includes("temp") && !h.includes("hot")) sensors.gpuTemp = val;
-      else if (h.includes("gpu") && h.includes("clock") && !h.includes("mem")) sensors.gpuClock = val;
-      else if (h.includes("vrm") && h.includes("temp")) sensors.vrmTemp = val;
-      else if (h.includes("fan") && (h.includes("rpm") || h.includes("speed"))) sensors.fanSpeeds[headers[i]] = val;
+    // GPU: nvidia-smi gives us excellent data for NVIDIA cards
+    const nvPath = "C:\\Windows\\System32\\nvidia-smi.exe";
+    const nv = await runCmd(`"${nvPath}" --query-gpu=temperature.gpu,power.draw,clocks.current.graphics,clocks.current.memory,fan.speed,utilization.gpu --format=csv,noheader,nounits 2>nul`, 10000);
+    if (nv.success && nv.output) {
+      const p = nv.output.split(",").map(s => parseFloat(s.trim()));
+      if (p[0] > 0) sensors.gpuTemp = p[0];
+      if (p[1] > 0) sensors.gpuPower = p[1];
+      if (p[2] > 0) sensors.gpuClock = p[2];
+      if (p[3] > 0) sensors.gpuMemClock = p[3];
+      if (p[5] > 0) sensors.gpuLoad = p[5];
     }
 
-    return sensors;
+    const hasSomething = sensors.cpuTemp || sensors.gpuTemp || sensors.cpuClock;
+    return { available: hasSomething, sensors, source: "WMI-direct" };
   }
 
   // Read sensor values from HWiNFO registry
@@ -241,18 +251,14 @@ class HWiNFOReader {
     if (!regExists) {
       const launch = await this.ensureRunning();
       if (launch.error) {
-        // Try CSV fallback before giving up
-        const csv = await this.readSensorsCSV();
-        if (csv.available) return csv;
-        return { available: false, error: launch.error };
+        // HWiNFO not found — fall back to direct WMI + nvidia-smi
+        return await this.readSensorsDirect();
       }
       // Re-check after launch attempt
       const recheck = await runPS(`Test-Path 'HKCU:\\Software\\HWiNFO64\\VSB'`, 3000);
       if (!recheck.success || !recheck.output.includes("True")) {
-        // VSB still not available — try CSV fallback
-        const csv = await this.readSensorsCSV();
-        if (csv.available) return csv;
-        return { available: false, error: "HWiNFO VSB registry not found. CSV fallback also failed. You may need to enable Shared Memory manually in HWiNFO64 settings." };
+        // VSB still not available — fall back to direct WMI + nvidia-smi
+        return await this.readSensorsDirect();
       }
     }
 
@@ -278,26 +284,20 @@ class HWiNFOReader {
     `, 10000);
 
     if (!result.success || !result.output) {
-      // VSB read failed — try CSV fallback
-      const csv = await this.readSensorsCSV();
-      if (csv.available) return csv;
-      return { available: false, error: "Could not read HWiNFO sensors: " + (result.error || "no output") };
+      // VSB read failed — fall back to direct WMI + nvidia-smi
+      return await this.readSensorsDirect();
     }
 
     try {
       const data = JSON.parse(result.output);
       if (data.error) {
-        // Registry exists but no sensor data — try CSV fallback
-        const csv = await this.readSensorsCSV();
-        if (csv.available) return csv;
-        return { available: false, error: data.error };
+        // Registry exists but no sensor data — fall back to direct
+        return await this.readSensorsDirect();
       }
       return { available: true, sensors: this._parseSensors(data), source: "VSB-shared-memory" };
     } catch(e) {
-      // Parse failed — try CSV fallback
-      const csv = await this.readSensorsCSV();
-      if (csv.available) return csv;
-      return { available: false, error: "Failed to parse HWiNFO data: " + e.message };
+      // Parse failed — fall back to direct
+      return await this.readSensorsDirect();
     }
   }
 
