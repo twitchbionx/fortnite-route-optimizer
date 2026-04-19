@@ -49,11 +49,32 @@ class SceWinManager {
   }
 
   _detect() {
+    const home = os.homedir();
+    const scewinDir = path.join(home, ".fn-optimizer", "scewin");
+    const dlDir = path.join(home, ".fn-optimizer", "downloads");
     const paths = [
-      path.join(os.homedir(), ".fn-optimizer", "scewin", "SCEWNX64.exe"),
-      path.join(os.homedir(), ".fn-optimizer", "scewin", "scewin_64.exe"),
-      "C:\\SCEWNX64.exe",
+      // Primary install dir
+      path.join(scewinDir, "SCEWNX64.exe"),
+      path.join(scewinDir, "scewin_64.exe"),
+      path.join(scewinDir, "SCEWIN_64.exe"),
+      // Subdirs of install dir
+      path.join(scewinDir, "SCEWIN", "SCEWNX64.exe"),
+      path.join(scewinDir, "AMISCE", "SCEWNX64.exe"),
+      // App tools dir
       path.join(__dirname, "tools", "SCEWNX64.exe"),
+      // Downloads dir (where DL_SCEWIN.exe may extract to)
+      path.join(dlDir, "SCEWNX64.exe"),
+      path.join(dlDir, "SCEWIN_64.exe"),
+      path.join(dlDir, "SCEWIN", "SCEWNX64.exe"),
+      // User folders
+      path.join(home, "Downloads", "SCEWNX64.exe"),
+      path.join(home, "Downloads", "SCEWIN", "SCEWNX64.exe"),
+      path.join(home, "Desktop", "SCEWNX64.exe"),
+      path.join(home, "Desktop", "SCEWIN", "SCEWNX64.exe"),
+      path.join(home, "SCEWIN", "SCEWNX64.exe"),
+      // System locations
+      "C:\\SCEWIN\\SCEWNX64.exe",
+      "C:\\SCEWNX64.exe",
     ];
     for (const p of paths) {
       try {
@@ -64,6 +85,14 @@ class SceWinManager {
         }
       } catch (e) { /* ignore */ }
     }
+  }
+
+  // Re-run detection (call after installing SceWin)
+  redetect() {
+    this.scewinPath = null;
+    this.available = false;
+    this._detect();
+    return { available: this.available, path: this.scewinPath };
   }
 
   // ── Export / Read ─────────────────────────────────────────────────
@@ -816,7 +845,9 @@ class AIOverclockEngine {
     this.stableSettings = null;
     this.currentProfile = null;
 
-    this._log("analyzing", "start", "AI Auto-Overclock starting...");
+    // Re-detect SceWin in case it was installed since app launch
+    this.scewin.redetect();
+    this._log("analyzing", "start", `AI Auto-Overclock starting... SceWin: ${this.scewin.available ? "FOUND at " + this.scewin.scewinPath : "not found (GPU-only mode)"}`);
 
     try {
       // Phase 1: Analyze hardware
@@ -1471,45 +1502,40 @@ class HardwareMonitor {
   // ── SceWin / AI Overclock Integration ─────────────────────────────
 
   getScewinStatus() {
+    // Re-detect every time this is called so UI stays in sync
+    this.scewin.redetect();
+    return { available: this.scewin.available, path: this.scewin.scewinPath };
+  }
+
+  async scewinExport() {
+    return await this.scewin.exportCurrentSettings();
+  }
+
+  async scewinBackup() {
+    return await this.scewin.backupSettings();
+  }
+
+  async scewinRestore() {
+    return await this.scewin.restoreBackup();
+  }
+
+  async aiAutoOC(opts) {
+    return await this.aiEngine.runFullAutoOC(opts);
+  }
+
+  aiProgress() {
     return {
-      available: this.scewin.available,
-      path: this.scewin.scewinPath,
-      settings: this.scewin.currentSettings,
+      running: this.aiEngine.running,
+      phase: this.aiEngine.currentPhase,
+      progress: this.aiEngine.progress,
+      log: this.aiEngine.log,
+      summary: this.aiEngine.stableSettings,
     };
   }
 
-  async aiAutoOC(options) {
-    return await this.aiEngine.runFullAutoOC(options);
-  }
-
-  getAIProgress() {
-    return this.aiEngine.getProgress();
-  }
-
-  stopAIOC() {
+  aiStop() {
     this.aiEngine.stop();
-    return { success: true, message: "Stop signal sent to AI overclock engine" };
-  }
-
-  // ── Stress Test (Quick) ──────────────────────────────────────────
-  // Simple CPU stress test using PowerShell
-  async runStressTest(durationSec = 10) {
-    const r = await runPS(`
-      $cores = (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors;
-      $jobs = @();
-      $end = (Get-Date).AddSeconds(${durationSec});
-      for ($i = 0; $i -lt $cores; $i++) {
-        $jobs += Start-Job -ScriptBlock {
-          $e = [DateTime]$args[0];
-          while ((Get-Date) -lt $e) { [Math]::Sqrt(12345.6789) | Out-Null }
-        } -ArgumentList $end.ToString("o")
-      }
-      Start-Sleep -Seconds ${durationSec};
-      $jobs | Stop-Job -PassThru | Remove-Job;
-      "Stress test completed (${durationSec}s on $cores threads)"
-    `, (durationSec + 5) * 1000);
-
-    return { success: r.success, output: r.output, error: r.error };
+    return { success: true };
   }
 }
 
