@@ -1349,7 +1349,11 @@
       const gpu = d.gpu || {};
       const ram = d.ram || {};
 
-      return `<div class="grid-3" style="gap:16px">
+      const srcLabel = d.hwinfoSource === "VSB-shared-memory" ? "HWiNFO (VSB)" : d.hwinfoSource === "CSV-report" ? "HWiNFO (CSV)" : d.hwinfoActive ? "HWiNFO" : "WMI fallback";
+      const srcColor = d.hwinfoActive ? "#22c55e" : "#ef4444";
+
+      return `<div style="text-align:right;margin-bottom:4px"><span class="mono" style="font-size:9px;color:${srcColor}">Sensor source: ${srcLabel}</span></div>
+      <div class="grid-3" style="gap:16px">
         <div class="hw-card">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <span style="font-size:12px;font-weight:600;color:#888">CPU</span>
@@ -1525,7 +1529,7 @@
           <div>
             <div style="display:flex;align-items:center;gap:8px">
               <span class="glitch-text" data-text="FORTNITE PC OPTIMIZER" style="font-weight:700;font-size:18px;letter-spacing:0.025em;color:#a78bfa">FORTNITE PC OPTIMIZER</span>
-              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.6.1</span>
+              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.7.0</span>
               <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#0a1a0a;color:#22c55e;border:1px solid #14532d">REAL PINGS</span>
             </div>
             <div class="mono" style="font-size:11px;color:#333">// measuring actual TCP latency to AWS game servers</div>
@@ -2557,9 +2561,9 @@ AllowedIPs = ...">${s.tunnelConfig || ""}</textarea>
 
         // Log entries
         html += `<div style="max-height:300px;overflow-y:auto;padding:8px;background:#050508;border-radius:4px;border:1px solid #12121e">`;
-        for (const entry of (s.aiOCLog || []).slice(-30)) {
-          const c = entry.phase === "cpu" ? "#3b82f6" : entry.phase === "gpu" ? "#22c55e" : entry.phase === "memory" ? "#eab308" : entry.phase === "analyze" ? "#7c3aed" : entry.phase === "validate" ? "#ef4444" : "#555";
-          const icon = entry.stable === true ? "\u2705" : entry.stable === false ? "\u274C" : entry.phase === "analyze" ? "\u{1F50D}" : "\u{1F527}";
+        for (const entry of (s.aiOCLog || []).slice(-50)) {
+          const c = entry.phase === "cpu" ? "#3b82f6" : entry.phase === "gpu" ? "#22c55e" : entry.phase === "memory" ? "#eab308" : entry.phase === "analyzing" ? "#7c3aed" : entry.phase === "analyze" ? "#7c3aed" : entry.phase === "validate" ? "#ef4444" : entry.phase === "testing" ? "#eab308" : entry.phase === "failed" ? "#ef4444" : entry.phase === "stable" ? "#22c55e" : "#555";
+          const icon = entry.stable === true ? "\u2705" : entry.stable === false ? "\u274C" : entry.phase === "analyzing" ? "\u{1F50D}" : entry.phase === "analyze" ? "\u{1F50D}" : entry.phase === "failed" ? "\u274C" : entry.phase === "stable" ? "\u2705" : "\u{1F527}";
           html += `<div class="mono" style="font-size:10px;color:#666;margin-bottom:3px;line-height:1.4">
             ${icon} <span style="color:${c}">[${(entry.phase||"").toUpperCase()}]</span> ${escHtml(entry.message||entry.action||"")}${entry.temp ? " \u2022 "+entry.temp+"\u00B0C" : ""}${entry.clock ? " \u2022 "+entry.clock+"MHz" : ""}${entry.voltage ? " \u2022 "+entry.voltage+"V" : ""}
           </div>`;

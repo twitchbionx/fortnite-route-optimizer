@@ -100,53 +100,16 @@ class HWiNFOReader {
 
   // Force-enable Shared Memory and ensure HWiNFO is running with it active
   async ensureRunning() {
-    // Enable Shared Memory Support in HWiNFO settings via registry
-    await runPS(`
-      $paths = @('HKCU:\\Software\\HWiNFO64', 'HKCU:\\Software\\HWiNFO64\\VSB')
-      foreach ($p in $paths) { if (!(Test-Path $p)) { New-Item -Path $p -Force | Out-Null } }
-      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsSM' -Value 1 -Type DWord -Force
-      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsOnly' -Value 1 -Type DWord -Force
-    `, 5000);
-
-    // Also write an INI file for portable HWiNFO versions
     if (!this.available) this.redetect();
-    if (this.hwInfoPath) {
-      try {
-        const iniPath = path.join(path.dirname(this.hwInfoPath), "HWiNFO64.INI");
-        const iniContent = "[Settings]\nSensorsSM=1\nSensorsOnly=1\nMinimize=1\nAutoStart=1\n";
-        fs.writeFileSync(iniPath, iniContent);
-      } catch(e) {}
-    }
 
-    // Check if already running
-    const running = await this.isRunning();
-
-    // Check if VSB registry actually has sensor data (not just the path)
-    const vsbCheck = await runPS(`
-      $base = 'HKCU:\\Software\\HWiNFO64\\VSB'
-      if (!(Test-Path $base)) { Write-Output 'NO_VSB'; return }
-      $v = Get-ItemProperty -Path $base -ErrorAction SilentlyContinue
-      if ($v.Label0) { Write-Output "HAS_DATA:$($v.Label0)" } else { Write-Output 'NO_DATA' }
-    `, 5000);
-
-    const hasData = vsbCheck.success && vsbCheck.output.includes("HAS_DATA");
-
-    if (running && hasData) {
-      return { launched: false, alreadyRunning: true, hasData: true };
-    }
-
-    // HWiNFO is running but shared memory isn't active — need to restart it
-    if (running && !hasData) {
-      await runCmd('taskkill /IM HWiNFO64.exe /F 2>nul', 5000);
-      await new Promise(r => setTimeout(r, 2000));
-    }
-
-    // Find the binary
+    // Find the binary first
     if (!this.available) {
       const fallbacks = [
         "C:\\Program Files\\HWiNFO64\\HWiNFO64.exe",
+        "C:\\Program Files (x86)\\HWiNFO64\\HWiNFO64.exe",
         path.join(os.homedir(), ".fn-optimizer", "hwinfo", "HWiNFO64.exe"),
         path.join(os.homedir(), ".fn-optimizer", "hwinfo", "HWiNFO64", "HWiNFO64.exe"),
+        path.join(os.homedir(), "AppData\\Local\\Programs\\HWiNFO64\\HWiNFO64.exe"),
       ];
       for (const p of fallbacks) {
         try { if (fs.existsSync(p)) { this.hwInfoPath = p; this.available = true; break; } } catch(e) {}
@@ -157,26 +120,115 @@ class HWiNFOReader {
       return { launched: false, error: "HWiNFO64 not found — install it from the Dependencies tab" };
     }
 
-    // Launch HWiNFO in sensors-only mode
-    await runPS(`Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -WindowStyle Minimized`, 5000);
+    // Enable Shared Memory via registry BEFORE launching
+    await runPS(`
+      $paths = @('HKCU:\\Software\\HWiNFO64', 'HKCU:\\Software\\HWiNFO64\\VSB')
+      foreach ($p in $paths) { if (!(Test-Path $p)) { New-Item -Path $p -Force | Out-Null } }
+      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsSM' -Value 1 -Type DWord -Force
+      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsOnly' -Value 1 -Type DWord -Force
+      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'AutoStart' -Value 1 -Type DWord -Force
+    `, 5000);
 
-    // Wait up to 25 seconds for VSB to get populated with actual sensor data
-    for (let i = 0; i < 25; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      const check = await runPS(`
-        $base = 'HKCU:\\Software\\HWiNFO64\\VSB'
-        if (!(Test-Path $base)) { Write-Output 'NO_VSB'; return }
-        $v = Get-ItemProperty -Path $base -ErrorAction SilentlyContinue
-        if ($v.Label0) { Write-Output "HAS_DATA:$($v.Label0)" } else { Write-Output 'NO_DATA' }
-      `, 3000);
-      if (check.success && check.output.includes("HAS_DATA")) {
-        // Wait 2 more seconds for all sensors to populate
-        await new Promise(r => setTimeout(r, 2000));
-        return { launched: true, path: this.hwInfoPath, hasData: true };
-      }
+    // Write INI file next to the EXE (for both portable and installed versions)
+    try {
+      const iniPath = path.join(path.dirname(this.hwInfoPath), "HWiNFO64.INI");
+      const iniContent = "[Settings]\nSensorsSM=1\nSensorsOnly=1\nMinimize=1\nAutoStart=1\nShowWelcome=0\n";
+      fs.writeFileSync(iniPath, iniContent);
+    } catch(e) {} // may fail if Program Files (need admin)
+
+    // Kill any existing HWiNFO so it restarts with our settings
+    const running = await this.isRunning();
+    if (running) {
+      await runCmd('taskkill /IM HWiNFO64.exe /F 2>nul', 5000);
+      await new Promise(r => setTimeout(r, 3000));
     }
 
-    return { launched: true, path: this.hwInfoPath, hasData: false, warning: "HWiNFO started but sensor data not detected after 25s. Shared Memory may not be supported in this version." };
+    // Launch with explicit shared memory flags
+    // HWiNFO64 supports: -sm (shared memory), -lSENSORSONLY (sensors only)
+    const launchCmds = [
+      `Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -ArgumentList '-sm -lSENSORSONLY' -WindowStyle Minimized`,
+      `Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -ArgumentList '-sm' -WindowStyle Minimized`,
+      `Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -WindowStyle Minimized`,
+    ];
+
+    for (const cmd of launchCmds) {
+      await runPS(cmd, 5000);
+      // Wait up to 15 seconds for VSB data
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const check = await runPS(`
+          $base = 'HKCU:\\Software\\HWiNFO64\\VSB'
+          if (!(Test-Path $base)) { Write-Output 'NO_VSB'; return }
+          $v = Get-ItemProperty -Path $base -ErrorAction SilentlyContinue
+          if ($v.Label0) { Write-Output "HAS_DATA:$($v.Label0)" } else { Write-Output 'NO_DATA' }
+        `, 3000);
+        if (check.success && check.output.includes("HAS_DATA")) {
+          await new Promise(r => setTimeout(r, 2000));
+          return { launched: true, path: this.hwInfoPath, hasData: true };
+        }
+      }
+      // This launch method didn't work, kill and try next
+      await runCmd('taskkill /IM HWiNFO64.exe /F 2>nul', 5000);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    return { launched: true, path: this.hwInfoPath, hasData: false, warning: "HWiNFO started but Shared Memory not active. You may need to enable it manually: open HWiNFO64 → Settings → check 'Shared Memory Support'" };
+  }
+
+  // Fallback: read sensor data via HWiNFO CSV report mode (works without shared memory)
+  async readSensorsCSV() {
+    if (!this.available || !this.hwInfoPath) return { available: false, error: "HWiNFO64 not found" };
+
+    const csvPath = path.join(os.homedir(), ".fn-optimizer", "hwinfo-sensors.csv");
+    try { fs.unlinkSync(csvPath); } catch(e) {}
+
+    // Run HWiNFO briefly to capture a CSV snapshot
+    const r = await runCmd(`"${this.hwInfoPath}" /csv="${csvPath}" /maxtime=3`, 15000);
+
+    try {
+      if (fs.existsSync(csvPath)) {
+        const raw = fs.readFileSync(csvPath, "utf8");
+        if (raw.length > 50) {
+          return { available: true, sensors: this._parseCSVSensors(raw), source: "CSV-report" };
+        }
+      }
+    } catch(e) {}
+    return { available: false, error: "CSV report not generated" };
+  }
+
+  _parseCSVSensors(csv) {
+    const sensors = {
+      cpuTemp: null, cpuPackageTemp: null, cpuVoltage: null, cpuClock: null,
+      cpuPower: null, gpuTemp: null, gpuClock: null, gpuMemClock: null,
+      gpuLoad: null, gpuPower: null, vrmTemp: null, fanSpeeds: {},
+    };
+
+    const lines = csv.split("\n");
+    if (lines.length < 2) return sensors;
+
+    // CSV has headers on first line, values on subsequent lines
+    const headers = lines[0].split(",").map(h => h.trim().replace(/"/g, ""));
+    const lastDataLine = lines[lines.length - 1].trim() || lines[lines.length - 2]?.trim();
+    if (!lastDataLine) return sensors;
+    const values = lastDataLine.split(",").map(v => v.trim().replace(/"/g, ""));
+
+    for (let i = 0; i < headers.length; i++) {
+      const h = headers[i].toLowerCase();
+      const val = parseFloat(values[i]);
+      if (isNaN(val)) continue;
+
+      if (h.includes("cpu") && h.includes("package") && h.includes("temp")) sensors.cpuPackageTemp = val;
+      else if (h.includes("cpu") && h.includes("temp") && !sensors.cpuTemp) sensors.cpuTemp = val;
+      else if (h.includes("vcore") || (h.includes("cpu") && h.includes("voltage"))) sensors.cpuVoltage = val;
+      else if (h.includes("cpu") && h.includes("clock") && !h.includes("ring")) sensors.cpuClock = val;
+      else if (h.includes("cpu") && h.includes("package") && h.includes("power")) sensors.cpuPower = val;
+      else if (h.includes("gpu") && h.includes("temp") && !h.includes("hot")) sensors.gpuTemp = val;
+      else if (h.includes("gpu") && h.includes("clock") && !h.includes("mem")) sensors.gpuClock = val;
+      else if (h.includes("vrm") && h.includes("temp")) sensors.vrmTemp = val;
+      else if (h.includes("fan") && (h.includes("rpm") || h.includes("speed"))) sensors.fanSpeeds[headers[i]] = val;
+    }
+
+    return sensors;
   }
 
   // Read sensor values from HWiNFO registry
@@ -188,11 +240,19 @@ class HWiNFOReader {
     // If not present, try launching HWiNFO
     if (!regExists) {
       const launch = await this.ensureRunning();
-      if (launch.error) return { available: false, error: launch.error };
+      if (launch.error) {
+        // Try CSV fallback before giving up
+        const csv = await this.readSensorsCSV();
+        if (csv.available) return csv;
+        return { available: false, error: launch.error };
+      }
       // Re-check after launch attempt
       const recheck = await runPS(`Test-Path 'HKCU:\\Software\\HWiNFO64\\VSB'`, 3000);
       if (!recheck.success || !recheck.output.includes("True")) {
-        return { available: false, error: "HWiNFO VSB registry not found. Make sure HWiNFO64 is running with Shared Memory enabled." };
+        // VSB still not available — try CSV fallback
+        const csv = await this.readSensorsCSV();
+        if (csv.available) return csv;
+        return { available: false, error: "HWiNFO VSB registry not found. CSV fallback also failed. You may need to enable Shared Memory manually in HWiNFO64 settings." };
       }
     }
 
@@ -218,14 +278,25 @@ class HWiNFOReader {
     `, 10000);
 
     if (!result.success || !result.output) {
+      // VSB read failed — try CSV fallback
+      const csv = await this.readSensorsCSV();
+      if (csv.available) return csv;
       return { available: false, error: "Could not read HWiNFO sensors: " + (result.error || "no output") };
     }
 
     try {
       const data = JSON.parse(result.output);
-      if (data.error) return { available: false, error: data.error };
-      return { available: true, sensors: this._parseSensors(data) };
+      if (data.error) {
+        // Registry exists but no sensor data — try CSV fallback
+        const csv = await this.readSensorsCSV();
+        if (csv.available) return csv;
+        return { available: false, error: data.error };
+      }
+      return { available: true, sensors: this._parseSensors(data), source: "VSB-shared-memory" };
     } catch(e) {
+      // Parse failed — try CSV fallback
+      const csv = await this.readSensorsCSV();
+      if (csv.available) return csv;
       return { available: false, error: "Failed to parse HWiNFO data: " + e.message };
     }
   }
@@ -364,66 +435,161 @@ class SceWinManager {
     // Clean up old export file so we can detect if a new one was created
     try { fs.unlinkSync(exportPath); } catch(e) {}
 
-    // AMISCE/SceWin needs to run from its own directory and with admin elevation
-    // Try multiple command syntaxes since different versions use different flags
+    // AMISCE/SceWin needs to run from its own directory with admin elevation.
+    // Different AMISCE versions use wildly different flags. We try everything.
     const scewinDir = path.dirname(this.scewinPath);
     const scewinExe = path.basename(this.scewinPath);
-    const cmds = [
-      // Standard: /o = output, /s = script file path
-      `cd /d "${scewinDir}" && "${scewinExe}" /o /s "${exportPath}"`,
-      // Some versions: /o without /s, just the output path
-      `cd /d "${scewinDir}" && "${scewinExe}" /o "${exportPath}"`,
-      // With /lang flag for full setting names
-      `cd /d "${scewinDir}" && "${scewinExe}" /o /lang /s "${exportPath}"`,
-      // Elevated via PowerShell
-      `powershell -Command "Start-Process -FilePath '${this.scewinPath.replace(/'/g, "''")}' -ArgumentList '/o /s \"${exportPath.replace(/'/g, "''")}\"' -WorkingDirectory '${scewinDir.replace(/'/g, "''")}' -Verb RunAs -Wait -WindowStyle Hidden"`,
-      // Elevated without /s
-      `powershell -Command "Start-Process -FilePath '${this.scewinPath.replace(/'/g, "''")}' -ArgumentList '/o \"${exportPath.replace(/'/g, "''")}\"' -WorkingDirectory '${scewinDir.replace(/'/g, "''")}' -Verb RunAs -Wait -WindowStyle Hidden"`,
-    ];
+    const exportName = path.basename(exportPath);
 
-    for (const cmd of cmds) {
-      const r = await runCmd(cmd, 30000);
-      // Check if the export file was actually created and has content
-      try {
-        if (fs.existsSync(exportPath)) {
-          const raw = fs.readFileSync(exportPath, "utf8");
-          if (raw.length > 100 && (raw.includes("Setup Question") || raw.includes("Token"))) {
-            const settings = this._parseExport(raw);
-            const count = Object.keys(settings).length;
-            if (count > 0) {
-              this.currentSettings = settings;
-              return { success: true, settings, settingCount: count };
-            }
-          }
-        }
-      } catch (e) { /* try next command */ }
+    // First: try to discover what flags this version supports by running /? or /h
+    let helpOutput = "";
+    const helpResult = await runCmd(`cd /d "${scewinDir}" && "${scewinExe}" /? 2>&1`, 10000);
+    if (helpResult.output) helpOutput = helpResult.output;
+    if (!helpOutput) {
+      const h2 = await runCmd(`cd /d "${scewinDir}" && "${scewinExe}" /h 2>&1`, 10000);
+      if (h2.output) helpOutput = h2.output;
     }
+    this._lastHelpOutput = helpOutput; // store for debugging
 
-    // Last attempt: check if SceWin dumped the export somewhere else (like its own dir)
-    const altPaths = [
-      path.join(scewinDir, "AMISCE.txt"),
-      path.join(scewinDir, "setup.txt"),
-      path.join(scewinDir, "export.txt"),
-      path.join(scewinDir, "scewin.txt"),
-    ];
-    for (const alt of altPaths) {
+    // Build command list based on help output analysis
+    const cmds = [];
+    const esc = (p) => p.replace(/'/g, "''");
+
+    // AMISCE 5.x syntax: /o outputs to AMISCE.txt in CWD (no path argument)
+    // Then we copy the output file to our desired location
+    cmds.push({
+      label: "AMISCE /o (output to CWD)",
+      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /o`,
+      outputFile: path.join(scewinDir, "AMISCE.txt"),
+    });
+
+    // /o with /lang for full text descriptions
+    cmds.push({
+      label: "AMISCE /o /lang",
+      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /o /lang`,
+      outputFile: path.join(scewinDir, "AMISCE.txt"),
+    });
+
+    // /o with explicit filename — some versions support this
+    cmds.push({
+      label: "AMISCE /o /s <path>",
+      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /o /s "${exportPath}"`,
+      outputFile: exportPath,
+    });
+
+    cmds.push({
+      label: "AMISCE /o <path>",
+      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /o "${exportPath}"`,
+      outputFile: exportPath,
+    });
+
+    // /ds = dump script — some AMISCE versions use this
+    cmds.push({
+      label: "AMISCE /ds",
+      cmd: `cd /d "${scewinDir}" && "${scewinExe}" /ds "${exportPath}"`,
+      outputFile: exportPath,
+    });
+
+    // Elevated versions of the above
+    cmds.push({
+      label: "Elevated /o (CWD output)",
+      cmd: `powershell -Command "Start-Process -FilePath '${esc(this.scewinPath)}' -ArgumentList '/o' -WorkingDirectory '${esc(scewinDir)}' -Verb RunAs -Wait -WindowStyle Hidden"`,
+      outputFile: path.join(scewinDir, "AMISCE.txt"),
+    });
+
+    cmds.push({
+      label: "Elevated /o /lang",
+      cmd: `powershell -Command "Start-Process -FilePath '${esc(this.scewinPath)}' -ArgumentList '/o /lang' -WorkingDirectory '${esc(scewinDir)}' -Verb RunAs -Wait -WindowStyle Hidden"`,
+      outputFile: path.join(scewinDir, "AMISCE.txt"),
+    });
+
+    cmds.push({
+      label: "Elevated /o /s <path>",
+      cmd: `powershell -Command "Start-Process -FilePath '${esc(this.scewinPath)}' -ArgumentList '/o /s \\\"${esc(exportPath)}\\\"' -WorkingDirectory '${esc(scewinDir)}' -Verb RunAs -Wait -WindowStyle Hidden"`,
+      outputFile: exportPath,
+    });
+
+    this._lastExportAttempts = [];
+
+    for (const { label, cmd, outputFile } of cmds) {
+      // Clean up expected output files before each attempt
+      for (const f of [exportPath, outputFile]) {
+        try { fs.unlinkSync(f); } catch(e) {}
+      }
+
+      const r = await runCmd(cmd, 30000);
+      const attempt = { label, stdout: r.output?.substring(0, 500), stderr: r.error?.substring(0, 500), success: r.success };
+
+      // Check both the intended output file and common AMISCE output filenames
+      const checkFiles = [outputFile, exportPath];
+      if (outputFile !== path.join(scewinDir, "AMISCE.txt")) checkFiles.push(path.join(scewinDir, "AMISCE.txt"));
+
+      // Also check for any .txt file created in scewinDir in the last 30 seconds
       try {
-        if (fs.existsSync(alt)) {
-          const raw = fs.readFileSync(alt, "utf8");
-          if (raw.length > 100 && (raw.includes("Setup Question") || raw.includes("Token"))) {
-            const settings = this._parseExport(raw);
-            if (Object.keys(settings).length > 0) {
-              this.currentSettings = settings;
-              // Copy to expected path for future use
-              try { fs.copyFileSync(alt, exportPath); } catch(e) {}
-              return { success: true, settings, settingCount: Object.keys(settings).length };
+        const files = fs.readdirSync(scewinDir);
+        for (const f of files) {
+          if (f.endsWith(".txt") || f.endsWith(".TXT")) {
+            const fp = path.join(scewinDir, f);
+            const stat = fs.statSync(fp);
+            if (Date.now() - stat.mtimeMs < 30000 && !checkFiles.includes(fp)) {
+              checkFiles.push(fp);
             }
           }
         }
       } catch(e) {}
+
+      for (const checkPath of checkFiles) {
+        try {
+          if (fs.existsSync(checkPath)) {
+            const raw = fs.readFileSync(checkPath, "utf8");
+            attempt.fileFound = checkPath;
+            attempt.fileSize = raw.length;
+
+            if (raw.length > 50) {
+              // Be more flexible in parsing — look for any structured BIOS data
+              if (raw.includes("Setup Question") || raw.includes("Token") ||
+                  raw.includes("Question") || raw.includes("Variable") ||
+                  raw.includes("BIOS") || raw.includes("Setup")) {
+                const settings = this._parseExport(raw);
+                const count = Object.keys(settings).length;
+
+                // If standard parse found nothing, try alternate parse
+                if (count === 0) {
+                  const altSettings = this._parseExportAlt(raw);
+                  const altCount = Object.keys(altSettings).length;
+                  if (altCount > 0) {
+                    this.currentSettings = altSettings;
+                    attempt.parsedCount = altCount;
+                    this._lastExportAttempts.push(attempt);
+                    if (checkPath !== exportPath) {
+                      try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
+                    }
+                    return { success: true, settings: altSettings, settingCount: altCount, method: label };
+                  }
+                } else {
+                  this.currentSettings = settings;
+                  attempt.parsedCount = count;
+                  this._lastExportAttempts.push(attempt);
+                  if (checkPath !== exportPath) {
+                    try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
+                  }
+                  return { success: true, settings, settingCount: count, method: label };
+                }
+              }
+            }
+          }
+        } catch(e) { attempt.parseError = e.message; }
+      }
+
+      this._lastExportAttempts.push(attempt);
     }
 
-    return { success: false, error: "SceWin ran but no valid export file was produced. The AMISCE version may need different command syntax." };
+    // Build a debug message with what we tried
+    const debugInfo = this._lastExportAttempts
+      .map(a => `${a.label}: ${a.fileFound ? `file=${a.fileFound}(${a.fileSize}b)` : "no file"} stdout="${(a.stdout || "").substring(0, 100)}"`)
+      .join(" | ");
+
+    return { success: false, error: `SceWin export failed after ${cmds.length} attempts. Debug: ${debugInfo}`, helpOutput: helpOutput?.substring(0, 500) };
   }
 
   _parseExport(raw) {
@@ -448,6 +614,66 @@ class SceWinManager {
           raw: line.trim(),
         };
         currentName = null;
+      }
+    }
+
+    return settings;
+  }
+
+  // Alternate parser for different AMISCE output formats
+  _parseExportAlt(raw) {
+    const settings = {};
+    const lines = raw.split("\n");
+
+    // Format 1: "Question: <name>" / "Value: <hex>" pairs
+    let currentName = null;
+    for (const line of lines) {
+      const qMatch = line.match(/^\s*(?:Question|Variable|Name|Setting)\s*[:=]\s*(.+)/i);
+      if (qMatch) {
+        currentName = qMatch[1].trim();
+        continue;
+      }
+      const vMatch = line.match(/^\s*(?:Value|Current|Default)\s*[:=]\s*(0x[0-9A-Fa-f]+|[0-9]+)/i);
+      if (vMatch && currentName) {
+        settings[currentName] = {
+          token: "0x0",
+          value: vMatch[1].startsWith("0x") ? vMatch[1] : "0x" + parseInt(vMatch[1]).toString(16),
+          raw: line.trim(),
+        };
+        currentName = null;
+      }
+    }
+
+    if (Object.keys(settings).length > 0) return settings;
+
+    // Format 2: Tab/comma-separated table: Name\tToken\tValue
+    for (const line of lines) {
+      const parts = line.split(/\t|,/).map(p => p.trim());
+      if (parts.length >= 3) {
+        const name = parts[0];
+        const token = parts[1];
+        const value = parts[2];
+        if (name && /0x[0-9A-Fa-f]+/.test(token) && /0x[0-9A-Fa-f]+/.test(value)) {
+          settings[name] = { token, value, raw: line.trim() };
+        }
+      }
+    }
+
+    // Format 3: Flat key=value lines (like INI)
+    if (Object.keys(settings).length === 0) {
+      for (const line of lines) {
+        const kvMatch = line.match(/^([^=]+)=\s*(0x[0-9A-Fa-f]+|[0-9]+)/);
+        if (kvMatch) {
+          const name = kvMatch[1].trim();
+          const val = kvMatch[2];
+          if (name.length > 2 && name.length < 100) {
+            settings[name] = {
+              token: "0x0",
+              value: val.startsWith("0x") ? val : "0x" + parseInt(val).toString(16),
+              raw: line.trim(),
+            };
+          }
+        }
       }
     }
 
@@ -979,7 +1205,7 @@ class AIOverclockEngine {
       }
     }
 
-    // Read actual temps, clocks, and power from HWiNFO sensors
+    // Read actual temps, clocks, and power from HWiNFO sensors (VSB shared memory → CSV fallback)
     let hwinfoClockMHz = null;
     let hwinfoCpuTemp = null;
     let hwinfoCpuPower = null;
@@ -988,7 +1214,10 @@ class AIOverclockEngine {
       hwinfoCpuTemp = hwinfoSensors.sensors.cpuPackageTemp || hwinfoSensors.sensors.cpuTemp || null;
       hwinfoClockMHz = hwinfoSensors.sensors.cpuClock || null;
       hwinfoCpuPower = hwinfoSensors.sensors.cpuPower || null;
-      this._log("analyzing", "hwinfo-live", `HWiNFO live readings — Temp: ${hwinfoCpuTemp}C | Clock: ${hwinfoClockMHz} MHz | Power: ${hwinfoCpuPower}W`);
+      const source = hwinfoSensors.source || "VSB/CSV";
+      this._log("analyzing", "hwinfo-live", `HWiNFO live readings (${source}) — Temp: ${hwinfoCpuTemp}C | Clock: ${hwinfoClockMHz} MHz | Power: ${hwinfoCpuPower}W`);
+    } else {
+      this._log("analyzing", "hwinfo-fail", `HWiNFO sensor read failed: ${hwinfoSensors.error || "unknown"} — temps will use WMI fallback`);
     }
 
     // Determine base ratio: prefer BIOS reading, then HWiNFO clock, then WMI estimate
@@ -1531,7 +1760,13 @@ class AIOverclockEngine {
     const exported = await this.scewin.exportCurrentSettings();
     if (!exported.success) {
       this._log("analyzing", "bios-discovery-fail", "Failed to export BIOS settings: " + exported.error);
+      if (exported.helpOutput) {
+        this._log("analyzing", "scewin-help", "SceWin help output: " + exported.helpOutput);
+      }
       return this.biosMap;
+    }
+    if (exported.method) {
+      this._log("analyzing", "bios-discovery", `Export succeeded via: ${exported.method}`);
     }
 
     const allNames = Object.keys(exported.settings);
@@ -1827,7 +2062,7 @@ class HardwareMonitor {
       if (Object.keys(s.fanSpeeds || {}).length > 0) cpuStats.fans = s.fanSpeeds;
     }
 
-    return { cpu: cpuStats, gpu: gpuStats, ram: ramStats, hwinfoActive: hwinfoData.available };
+    return { cpu: cpuStats, gpu: gpuStats, ram: ramStats, hwinfoActive: hwinfoData.available, hwinfoSource: hwinfoData.source || "none" };
   }
 
   async getCPUStats() {
