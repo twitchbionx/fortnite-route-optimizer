@@ -390,4 +390,14 @@ class DependencyManager {
   }
 
   // ── Install a specific dependency ───────────────────────────────
-  async installDep(depId, onProg
+  async installDep(depId, onProgress) {
+    switch (depId) {
+      case "wireguard": return await this.installWireGuard(onProgress);
+      case "nvidia-smi": return await this.installNvidiaSmi(onProgress);
+      case "scewin": return await this.installSceWin(onProgress);
+      default: return { success: false, error: "Unknown dependency: " + depId };
+    }
+  }
+}
+
+module.exports = DependencyManager;
