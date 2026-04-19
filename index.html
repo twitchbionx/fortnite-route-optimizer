@@ -2649,4 +2649,58 @@ AllowedIPs = ...">${s.tunnelConfig || ""}</textarea>
       if (s.debloatConfirm === "nuke") {
         html += `<div class="confirm-overlay" onclick="cancelConfirm()">
           <div class="confirm-box" onclick="event.stopPropagation()">
-         
+            <div style="font-size:24px;margin-bottom:12px">\u26A0\uFE0F</div>
+            <div style="font-size:14px;font-weight:700;color:#ef4444;margin-bottom:8px">FULL SYSTEM NUKE</div>
+            <div style="font-size:12px;color:#888;margin-bottom:16px">This will remove ALL bloatware apps, disable ALL unnecessary services, apply ALL telemetry blocks, and ALL performance tweaks. This cannot be easily undone.</div>
+            <div style="display:flex;gap:8px;justify-content:center">
+              <button onclick="cancelConfirm()" class="action-btn ghost">CANCEL</button>
+              <button onclick="confirmNuke()" class="action-btn red">NUKE EVERYTHING</button>
+            </div>
+          </div>
+        </div>`;
+      }
+
+      if (s.biosRebootConfirm) {
+        html += `<div class="confirm-overlay" onclick="cancelConfirm()">
+          <div class="confirm-box" onclick="event.stopPropagation()">
+            <div style="font-size:24px;margin-bottom:12px">\u{1F504}</div>
+            <div style="font-size:14px;font-weight:700;color:#f97316;margin-bottom:8px">REBOOT TO BIOS</div>
+            <div style="font-size:12px;color:#888;margin-bottom:16px">Your computer will restart and boot directly into BIOS/UEFI settings. Save any open work first.</div>
+            <div style="display:flex;gap:8px;justify-content:center">
+              <button onclick="cancelConfirm()" class="action-btn ghost">CANCEL</button>
+              <button onclick="confirmBiosReboot()" class="action-btn orange">REBOOT NOW</button>
+            </div>
+          </div>
+        </div>`;
+      }
+
+      document.getElementById("app").innerHTML = html;
+    }
+
+    render();
+
+    // ── Init ──────────────────────────────────────────────────────
+    async function init() {
+      // Check for updates
+      try {
+        if (window.api.updaterCheck) {
+          await window.api.updaterCheck();
+          const us = await window.api.updaterStatus();
+          if (us) state.update = us;
+        }
+      } catch(e) {}
+      render();
+
+      // Preload data for other sections in background
+      setTimeout(async () => {
+        try { await checkDeps(); } catch(e) {}
+        try { await loadDebloatData(); } catch(e) {}
+        try { await loadTweaks(); } catch(e) {}
+        try { await loadHwData(); } catch(e) {}
+        try { await loadBiosData(); } catch(e) {}
+      }, 500);
+    }
+    init();
+  </script>
+</body>
+</html>

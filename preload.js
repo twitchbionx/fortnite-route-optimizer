@@ -86,4 +86,5 @@ contextBridge.exposeInMainWorld("api", {
   depsCheckAll: () => ipcRenderer.invoke("deps-check-all"),
   depsInstall: (depId) => ipcRenderer.invoke("deps-install", depId),
   depsInstallAll: () => ipcRenderer.invoke("deps-install-all"),
-  onDepsProgre
+  onDepsProgress: (callback) => ipcRenderer.on("deps-progress", (_e, data) => callback(data)),
+});
