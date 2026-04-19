@@ -609,7 +609,6 @@ echo DONE >> "${logPath}"
 
     // If UAC was denied or failed, provide clear feedback
     const uacDenied = (elevatedResult.error || "").includes("canceled") || (elevatedResult.error || "").includes("denied") || (elevatedResult.error || "").includes("not recognized");
-    const driverError = logContent.includes("Unable to load driver");
 
     // Parse diagnostic info from log
     const hasDriver = logContent.includes("FOUND: amifldrv64.sys") || logContent.includes("FOUND: amifldrv.sys");
