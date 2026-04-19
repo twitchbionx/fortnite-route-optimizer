@@ -468,46 +468,38 @@ class SceWinManager {
     // Method 1: Direct elevated execution via PowerShell
     // -Verb RunAs on the exe directly (not through cmd/batch)
     // -WindowStyle Normal so UAC prompt is visible
-    const elevatedResult = await runPS(`
-      try {
-        $exportPath = '${exportPath.replace(/'/g, "''")}'
-        $scewinDir = '${scewinDir.replace(/'/g, "''")}'
-        $scewinExe = '${this.scewinPath.replace(/'/g, "''")}'
+    // Build escaped path strings for PowerShell
+    const psExportPath = exportPath.replace(/\\/g, "\\\\");
+    const psScewinDir = scewinDir.replace(/\\/g, "\\\\");
+    const psScewinExe = this.scewinPath.replace(/\\/g, "\\\\");
 
-        # Run SCEWIN elevated with /o /s to export
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $scewinExe
-        $psi.Arguments = "/o /s `"$exportPath`""
-        $psi.WorkingDirectory = $scewinDir
-        $psi.Verb = 'RunAs'
-        $psi.UseShellExecute = $true
-        $psi.WindowStyle = 'Normal'
+    const psScript = [
+      "try {",
+      '  $exportPath = "' + psExportPath + '"',
+      '  $scewinDir = "' + psScewinDir + '"',
+      '  $scewinExe = "' + psScewinExe + '"',
+      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+      "  $psi.FileName = $scewinExe",
+      '  $psi.Arguments = "/o /s `"$exportPath`""',
+      "  $psi.WorkingDirectory = $scewinDir",
+      "  $psi.Verb = 'RunAs'",
+      "  $psi.UseShellExecute = $true",
+      "  $psi.WindowStyle = 'Normal'",
+      "  $proc = [System.Diagnostics.Process]::Start($psi)",
+      "  $proc.WaitForExit(30000)",
+      "  if (!$proc.HasExited) { $proc.Kill() }",
+      "  Write-Output \"ExitCode:$($proc.ExitCode)\"",
+      "  Start-Sleep -Seconds 2",
+      "  if (Test-Path $exportPath) { Write-Output 'EXPORT_EXISTS' }",
+      "  else {",
+      "    $alt = Join-Path $scewinDir 'AMISCE.txt'",
+      "    if (Test-Path $alt) { Copy-Item $alt $exportPath -Force; Write-Output 'COPIED_AMISCE_TXT' }",
+      "    else { Write-Output 'NO_EXPORT_FILE' }",
+      "  }",
+      "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
+    ].join("\n");
 
-        $proc = [System.Diagnostics.Process]::Start($psi)
-        $proc.WaitForExit(30000)
-        if (!$proc.HasExited) { $proc.Kill() }
-
-        Write-Output "ExitCode:$($proc.ExitCode)"
-
-        # Wait a moment for file to be written
-        Start-Sleep -Seconds 2
-
-        if (Test-Path $exportPath) {
-          Write-Output "EXPORT_EXISTS"
-        } else {
-          # Check if AMISCE.txt was created in the scewin dir instead
-          $alt = Join-Path $scewinDir 'AMISCE.txt'
-          if (Test-Path $alt) {
-            Copy-Item $alt $exportPath -Force
-            Write-Output "COPIED_AMISCE_TXT"
-          } else {
-            Write-Output "NO_EXPORT_FILE"
-          }
-        }
-      } catch {
-        Write-Output "ERROR:$($_.Exception.Message)"
-      }
-    `, 60000);
+    const elevatedResult = await runPS(psScript, 60000);
 
     this._lastElevatedResult = elevatedResult;
     let logContent = elevatedResult.output || elevatedResult.error || "no output";
