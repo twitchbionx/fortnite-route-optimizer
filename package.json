@@ -1,0 +1,62 @@
+{
+  "name": "fortnite-route-optimizer",
+  "version": "3.4.0",
+  "description": "The ultimate Fortnite PC optimization suite",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "publish": "electron-builder --win --publish always",
+    "publish:mac": "electron-builder --mac --publish always",
+    "publish:linux": "electron-builder --linux --publish always"
+  },
+  "build": {
+    "appId": "com.edgelord.fortnite-optimizer",
+    "productName": "Fortnite Route Optimizer",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "twitchbionx",
+        "repo": "fortnite-route-optimizer"
+      }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "FN Optimizer"
+    },
+    "mac": {
+      "target": ["dmg"]
+    },
+    "linux": {
+      "target": ["AppImage"]
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "tunnel.js",
+      "updater.js",
+      "debloater.js",
+      "tweaks.js",
+      "overclock.js",
+      "bios.js",
+      "installer.js",
+      "index.html"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+    "electron-updater": "^6.1.7",
+    "ping": "^0.4.4"
+  }
+}
