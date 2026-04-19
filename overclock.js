@@ -92,12 +92,82 @@ class HWiNFOReader {
     return { available: this.available, path: this.hwInfoPath };
   }
 
-  // Read sensor values from HWiNFO registry (requires HWiNFO running with Shared Memory enabled)
+  // Check if HWiNFO64 process is running
+  async isRunning() {
+    const r = await runCmd('tasklist /FI "IMAGENAME eq HWiNFO64.exe" 2>nul', 5000);
+    return r.success && r.output.toLowerCase().includes("hwinfo64");
+  }
+
+  // Force-enable Shared Memory in registry and launch HWiNFO if not running
+  async ensureRunning() {
+    // Enable Shared Memory Support in HWiNFO settings via registry
+    await runPS(`
+      $paths = @('HKCU:\\Software\\HWiNFO64', 'HKCU:\\Software\\HWiNFO64\\VSB')
+      foreach ($p in $paths) { if (!(Test-Path $p)) { New-Item -Path $p -Force | Out-Null } }
+      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsSM' -Value 1 -Type DWord -Force
+      Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsOnly' -Value 1 -Type DWord -Force
+    `, 5000);
+
+    // Check if already running
+    const running = await this.isRunning();
+    if (running) return { launched: false, alreadyRunning: true };
+
+    // Not running — try to launch it
+    if (!this.available) this.redetect();
+    if (!this.available) {
+      // Last resort: try common paths even if _detect failed
+      const fallbacks = [
+        "C:\\Program Files\\HWiNFO64\\HWiNFO64.exe",
+        path.join(os.homedir(), ".fn-optimizer", "hwinfo", "HWiNFO64.exe"),
+        path.join(os.homedir(), ".fn-optimizer", "hwinfo", "HWiNFO64", "HWiNFO64.exe"),
+      ];
+      for (const p of fallbacks) {
+        try { if (fs.existsSync(p)) { this.hwInfoPath = p; this.available = true; break; } } catch(e) {}
+      }
+    }
+
+    if (!this.available || !this.hwInfoPath) {
+      return { launched: false, error: "HWiNFO64 not found — install it from the Dependencies tab" };
+    }
+
+    // Launch in sensors-only mode (minimized, no main window)
+    await runPS(`Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -WindowStyle Minimized`, 5000);
+
+    // Wait up to 10 seconds for it to start and populate the registry
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const check = await runPS(`Test-Path 'HKCU:\\Software\\HWiNFO64\\VSB'`, 3000);
+      if (check.success && check.output.includes("True")) {
+        // Wait a bit more for sensors to populate
+        await new Promise(r => setTimeout(r, 2000));
+        return { launched: true, path: this.hwInfoPath };
+      }
+    }
+
+    return { launched: true, path: this.hwInfoPath, warning: "HWiNFO started but VSB registry not yet populated — sensors may need a moment" };
+  }
+
+  // Read sensor values from HWiNFO registry
   async readSensors() {
-    // HWiNFO writes sensor data to HKCU\Software\HWiNFO64\VSB when shared memory is enabled
+    // First check if registry path exists
+    const regCheck = await runPS(`Test-Path 'HKCU:\\Software\\HWiNFO64\\VSB'`, 3000);
+    const regExists = regCheck.success && regCheck.output.includes("True");
+
+    // If not present, try launching HWiNFO
+    if (!regExists) {
+      const launch = await this.ensureRunning();
+      if (launch.error) return { available: false, error: launch.error };
+      // Re-check after launch attempt
+      const recheck = await runPS(`Test-Path 'HKCU:\\Software\\HWiNFO64\\VSB'`, 3000);
+      if (!recheck.success || !recheck.output.includes("True")) {
+        return { available: false, error: "HWiNFO VSB registry not found. Make sure HWiNFO64 is running with Shared Memory enabled." };
+      }
+    }
+
+    // Read sensor data from registry
     const result = await runPS(`
       $base = 'HKCU:\\Software\\HWiNFO64\\VSB'
-      if (!(Test-Path $base)) { Write-Output '{"error":"HWiNFO registry not found. Is HWiNFO64 running with Shared Memory enabled?"}'; return }
+      if (!(Test-Path $base)) { Write-Output '{"error":"VSB not found"}'; return }
       $sensors = @{}
       $values = Get-ItemProperty -Path $base -ErrorAction SilentlyContinue
       if ($values) {
@@ -111,11 +181,12 @@ class HWiNFOReader {
           $i++
         }
       }
+      if ($sensors.Count -eq 0) { Write-Output '{"error":"No sensor data in VSB registry. Enable Shared Memory in HWiNFO settings."}'; return }
       $sensors | ConvertTo-Json -Depth 3
     `, 10000);
 
     if (!result.success || !result.output) {
-      return { available: false, error: "Could not read HWiNFO sensors" };
+      return { available: false, error: "Could not read HWiNFO sensors: " + (result.error || "no output") };
     }
 
     try {
@@ -123,7 +194,7 @@ class HWiNFOReader {
       if (data.error) return { available: false, error: data.error };
       return { available: true, sensors: this._parseSensors(data) };
     } catch(e) {
-      return { available: false, error: "Failed to parse HWiNFO data" };
+      return { available: false, error: "Failed to parse HWiNFO data: " + e.message };
     }
   }
 
@@ -1009,6 +1080,17 @@ class AIOverclockEngine {
     // Re-detect SceWin and HWiNFO in case they were installed since app launch
     this.scewin.redetect();
     this.hw.hwinfo.redetect();
+
+    // Force-launch HWiNFO and enable shared memory so we get accurate sensor data
+    const hwinfoLaunch = await this.hw.hwinfo.ensureRunning();
+    if (hwinfoLaunch.error) {
+      this._log("analyzing", "hwinfo-warn", `HWiNFO64 not available: ${hwinfoLaunch.error} — will use WMI fallback (less accurate)`);
+    } else if (hwinfoLaunch.launched) {
+      this._log("analyzing", "hwinfo-launched", `HWiNFO64 auto-launched from ${hwinfoLaunch.path} — using accurate sensor data`);
+    } else if (hwinfoLaunch.alreadyRunning) {
+      this._log("analyzing", "hwinfo-ok", "HWiNFO64 already running — using accurate sensor data");
+    }
+
     this._log("analyzing", "start", `AI Auto-Overclock starting... SceWin: ${this.scewin.available ? "FOUND at " + this.scewin.scewinPath : "not found (GPU-only mode)"} | HWiNFO: ${this.hw.hwinfo.available ? "ACTIVE" : "not detected"}`);
 
     try {
@@ -1308,8 +1390,19 @@ class HardwareMonitor {
       this.getCPUStats(),
       this.getGPUStats(),
       this.getRAMStats(),
-      this.hwinfo.readSensors().catch(() => ({ available: false })),
+      this.hwinfo.readSensors().catch((e) => ({ available: false, error: e.message })),
     ]);
+
+    // If HWiNFO failed on first attempt, try once more after ensuring it's running
+    if (!hwinfoData.available) {
+      try {
+        await this.hwinfo.ensureRunning();
+        const retry = await this.hwinfo.readSensors();
+        if (retry.available && retry.sensors) {
+          Object.assign(hwinfoData, retry);
+        }
+      } catch(e) {}
+    }
 
     // Overlay HWiNFO data for more accurate readings when available
     if (hwinfoData.available && hwinfoData.sensors) {
