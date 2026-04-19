@@ -458,57 +458,71 @@ class SceWinManager {
       try { fs.unlinkSync(f); } catch(e) {}
     }
 
-    // SCEWIN_64.exe works from admin CMD but has "Press any key to continue" which
-    // blocks hidden batch execution. We pipe input via echo to bypass the pause.
-    // The batch runs elevated via PowerShell -Verb RunAs.
-    const batchContent = `@echo off
-cd /d "${scewinDir}"
-echo Running AMISCE export... > "${logPath}"
+    // SCEWIN works from admin CMD but needs true elevation for its kernel driver.
+    // Previous approaches (batch + Start-Process -Verb RunAs -WindowStyle Hidden)
+    // failed because the elevation wasn't being granted properly.
+    //
+    // New approach: Run SCEWIN_64.exe directly via elevated PowerShell, with
+    // stdin redirected from NUL to bypass "Press any key to continue" pause.
 
-echo. | "${scewinExe}" /o /s "${exportPath}" >> "${logPath}" 2>&1
-if exist "${exportPath}" (
-  echo SUCCESS: /o /s created export file >> "${logPath}"
-  exit /b 0
-)
-
-echo First attempt failed, trying /o to CWD... >> "${logPath}"
-echo. | "${scewinExe}" /o >> "${logPath}" 2>&1
-if exist "${amisceOutput}" (
-  copy /Y "${amisceOutput}" "${exportPath}" >> "${logPath}" 2>&1
-  echo SUCCESS: copied AMISCE.txt >> "${logPath}"
-  exit /b 0
-)
-
-echo Both attempts failed >> "${logPath}"
-dir /b >> "${logPath}" 2>&1
-exit /b 1
-`;
-
-    fs.writeFileSync(batchPath, batchContent);
-
-    // Run elevated. Key fix: use cmd /c with echo piped to handle "Press any key" pause.
-    // -Verb RunAs triggers UAC elevation prompt.
+    // Method 1: Direct elevated execution via PowerShell
+    // -Verb RunAs on the exe directly (not through cmd/batch)
+    // -WindowStyle Normal so UAC prompt is visible
     const elevatedResult = await runPS(`
-      $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c ""${batchPath.replace(/\\/g, "\\\\").replace(/"/g, '""')}""' -Verb RunAs -Wait -PassThru -WindowStyle Hidden
-      Write-Output "ExitCode:$($proc.ExitCode)"
+      try {
+        $exportPath = '${exportPath.replace(/'/g, "''")}'
+        $scewinDir = '${scewinDir.replace(/'/g, "''")}'
+        $scewinExe = '${this.scewinPath.replace(/'/g, "''")}'
+
+        # Run SCEWIN elevated with /o /s to export
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $scewinExe
+        $psi.Arguments = "/o /s `"$exportPath`""
+        $psi.WorkingDirectory = $scewinDir
+        $psi.Verb = 'RunAs'
+        $psi.UseShellExecute = $true
+        $psi.WindowStyle = 'Normal'
+
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $proc.WaitForExit(30000)
+        if (!$proc.HasExited) { $proc.Kill() }
+
+        Write-Output "ExitCode:$($proc.ExitCode)"
+
+        # Wait a moment for file to be written
+        Start-Sleep -Seconds 2
+
+        if (Test-Path $exportPath) {
+          Write-Output "EXPORT_EXISTS"
+        } else {
+          # Check if AMISCE.txt was created in the scewin dir instead
+          $alt = Join-Path $scewinDir 'AMISCE.txt'
+          if (Test-Path $alt) {
+            Copy-Item $alt $exportPath -Force
+            Write-Output "COPIED_AMISCE_TXT"
+          } else {
+            Write-Output "NO_EXPORT_FILE"
+          }
+        }
+      } catch {
+        Write-Output "ERROR:$($_.Exception.Message)"
+      }
     `, 60000);
 
     this._lastElevatedResult = elevatedResult;
-
-    // Read the log file for debugging
-    let logContent = "";
-    try { logContent = fs.readFileSync(logPath, "utf8"); } catch(e) {}
+    let logContent = elevatedResult.output || elevatedResult.error || "no output";
     this._lastExportLog = logContent;
 
-    // Also check if the export file ended up somewhere else due to "Press any key" causing
-    // the output path to be relative to the wrong directory
-    if (!fs.existsSync(exportPath)) {
-      // Check if it was created in the scewin directory with the expected filename
-      const altName = path.basename(exportPath);
-      const altPath = path.join(scewinDir, altName);
-      if (fs.existsSync(altPath)) {
-        try { fs.copyFileSync(altPath, exportPath); } catch(e) {}
+    // Check for export file
+    // The "Press any key" pause means the process might still be alive — give it time
+    for (let wait = 0; wait < 5; wait++) {
+      if (fs.existsSync(exportPath)) break;
+      // Also check AMISCE.txt in scewin dir
+      if (fs.existsSync(amisceOutput)) {
+        try { fs.copyFileSync(amisceOutput, exportPath); } catch(e) {}
+        break;
       }
+      await new Promise(r => setTimeout(r, 2000));
     }
 
     // Check if export file was created
