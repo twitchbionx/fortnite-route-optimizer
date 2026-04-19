@@ -468,33 +468,41 @@ class SceWinManager {
     // Method 1: Direct elevated execution via PowerShell
     // -Verb RunAs on the exe directly (not through cmd/batch)
     // -WindowStyle Normal so UAC prompt is visible
-    // Build escaped path strings for PowerShell
-    const psExportPath = exportPath.replace(/\\/g, "\\\\");
-    const psScewinDir = scewinDir.replace(/\\/g, "\\\\");
-    const psScewinExe = this.scewinPath.replace(/\\/g, "\\\\");
+    // Export to a simple filename in SCEWIN's own directory to avoid path issues,
+    // then copy to our desired location afterward.
+    const localExport = "fn_export.txt";
+    const localExportFull = path.join(scewinDir, localExport);
+    try { fs.unlinkSync(localExportFull); } catch(e) {}
+
+    // Also clean AMISCE.txt in case /o without /s creates it there
+    try { fs.unlinkSync(amisceOutput); } catch(e) {}
+
+    // Build escaped path strings for PowerShell (use forward slashes to avoid escape issues)
+    const psScewinExe = this.scewinPath.replace(/\\/g, "/");
+    const psScewinDir2 = scewinDir.replace(/\\/g, "/");
 
     const psScript = [
       "try {",
-      '  $exportPath = "' + psExportPath + '"',
-      '  $scewinDir = "' + psScewinDir + '"',
-      '  $scewinExe = "' + psScewinExe + '"',
       "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      "  $psi.FileName = $scewinExe",
-      '  $psi.Arguments = "/o /s `"$exportPath`""',
-      "  $psi.WorkingDirectory = $scewinDir",
+      '  $psi.FileName = "' + psScewinExe + '"',
+      '  $psi.Arguments = "/o /s ' + localExport + '"',
+      '  $psi.WorkingDirectory = "' + psScewinDir2 + '"',
       "  $psi.Verb = 'RunAs'",
       "  $psi.UseShellExecute = $true",
       "  $psi.WindowStyle = 'Normal'",
       "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      "  $proc.WaitForExit(30000)",
+      "  $proc.WaitForExit(45000)",
       "  if (!$proc.HasExited) { $proc.Kill() }",
+      "  Start-Sleep -Seconds 3",
       "  Write-Output \"ExitCode:$($proc.ExitCode)\"",
-      "  Start-Sleep -Seconds 2",
-      "  if (Test-Path $exportPath) { Write-Output 'EXPORT_EXISTS' }",
+      '  $localFile = "' + psScewinDir2 + '/' + localExport + '"',
+      '  $amisceFile = "' + psScewinDir2 + '/AMISCE.txt"',
+      "  if (Test-Path $localFile) { Write-Output 'FOUND_LOCAL' }",
+      "  elseif (Test-Path $amisceFile) { Write-Output 'FOUND_AMISCE' }",
       "  else {",
-      "    $alt = Join-Path $scewinDir 'AMISCE.txt'",
-      "    if (Test-Path $alt) { Copy-Item $alt $exportPath -Force; Write-Output 'COPIED_AMISCE_TXT' }",
-      "    else { Write-Output 'NO_EXPORT_FILE' }",
+      "    Write-Output 'NO_FILE'",
+      '    Write-Output "Files in dir:"',
+      '    Get-ChildItem "' + psScewinDir2 + '" -Filter *.txt | ForEach-Object { Write-Output $_.Name }',
       "  }",
       "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
     ].join("\n");
@@ -505,20 +513,26 @@ class SceWinManager {
     let logContent = elevatedResult.output || elevatedResult.error || "no output";
     this._lastExportLog = logContent;
 
-    // Check for export file
-    // The "Press any key" pause means the process might still be alive — give it time
+    // Check for export file in multiple locations
+    // The "Press any key" pause means process might linger — give extra time
     for (let wait = 0; wait < 5; wait++) {
-      if (fs.existsSync(exportPath)) break;
-      // Also check AMISCE.txt in scewin dir
+      // Check our local export in scewin dir
+      if (fs.existsSync(localExportFull)) {
+        try { fs.copyFileSync(localExportFull, exportPath); } catch(e) {}
+        break;
+      }
+      // Check AMISCE.txt in scewin dir
       if (fs.existsSync(amisceOutput)) {
         try { fs.copyFileSync(amisceOutput, exportPath); } catch(e) {}
         break;
       }
+      // Check our target path directly
+      if (fs.existsSync(exportPath)) break;
       await new Promise(r => setTimeout(r, 2000));
     }
 
     // Check if export file was created
-    const checkFiles = [exportPath, amisceOutput];
+    const checkFiles = [exportPath, localExportFull, amisceOutput];
 
     // Also scan for any new .txt files in SceWin dir
     try {
