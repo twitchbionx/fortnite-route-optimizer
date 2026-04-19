@@ -48,6 +48,7 @@
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes slideDown { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
     .animate-pulse { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
     .animate-spin { animation: spin 1s linear infinite; }
 
@@ -1139,6 +1140,12 @@
     }
 
     // ── Dependencies ────────────────────────────────────────────────
+    // Listen for dep install progress
+    window.api.onDepsProgress((data) => {
+      state.depsProgress = data;
+      render();
+    });
+
     async function checkDeps() {
       try {
         const deps = await window.api.depsCheckAll();
@@ -1149,11 +1156,11 @@
 
     async function installDep(depId) {
       state.depsInstalling = depId;
+      state.depsProgress = null;
       render();
       try {
         const result = await window.api.depsInstall(depId);
         if (result.success) {
-          // Re-check all deps
           await checkDeps();
         } else {
           alert("Install failed: " + (result.error || "Unknown error"));
@@ -1162,17 +1169,20 @@
         alert("Install error: " + e.message);
       }
       state.depsInstalling = null;
+      state.depsProgress = null;
       render();
     }
 
     async function installAllDeps() {
       state.depsInstalling = "all";
+      state.depsProgress = null;
       render();
       try {
         await window.api.depsInstallAll();
         await checkDeps();
       } catch(e) {}
       state.depsInstalling = null;
+      state.depsProgress = null;
       render();
     }
 
@@ -1436,8 +1446,9 @@
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">`;
         for (const dep of missing) {
-          const isInstalling = s.depsInstalling === dep.id;
-          html += `<div style="flex:1;min-width:200px;padding:8px;background:#08080f;border-radius:6px;border:1px solid #1a1a2e">
+          const isInstalling = s.depsInstalling === dep.id || (s.depsInstalling === "all" && s.depsProgress && s.depsProgress.dep === dep.id);
+          const prog = isInstalling && s.depsProgress ? s.depsProgress : null;
+          html += `<div style="flex:1;min-width:200px;padding:8px;background:#08080f;border-radius:6px;border:1px solid ${isInstalling?"#7c3aed":"#1a1a2e"}">
             <div style="display:flex;align-items:center;justify-content:space-between">
               <div>
                 <div style="font-size:11px;font-weight:600;color:#c4b5fd">${dep.name}</div>
@@ -1450,7 +1461,22 @@
                   ${isInstalling?"\u{1F504}":"INSTALL"}
                 </button>`}
             </div>
-            ${dep.installNote ? `<div class="mono" style="font-size:8px;color:#333;margin-top:4px">${dep.installNote}</div>` : ""}
+            ${isInstalling && prog ? `
+              <div style="margin-top:6px">
+                <div class="mono" style="font-size:9px;color:#a78bfa;margin-bottom:4px">${escHtml(prog.message || prog.status || "Working...")}</div>
+                ${prog.percent >= 0 ? `
+                  <div style="width:100%;height:4px;background:#1a1a2e;border-radius:2px;overflow:hidden">
+                    <div style="width:${prog.percent}%;height:100%;background:linear-gradient(90deg,#7c3aed,#a78bfa);transition:width 0.3s;border-radius:2px"></div>
+                  </div>
+                  <div class="mono" style="font-size:8px;color:#555;margin-top:2px;text-align:right">${prog.percent}%</div>
+                ` : `
+                  <div style="width:100%;height:4px;background:#1a1a2e;border-radius:2px;overflow:hidden">
+                    <div style="width:100%;height:100%;background:linear-gradient(90deg,transparent,#7c3aed,transparent);animation:shimmer 1.5s infinite;border-radius:2px"></div>
+                  </div>
+                `}
+              </div>
+            ` : ""}
+            ${!isInstalling && dep.installNote ? `<div class="mono" style="font-size:8px;color:#333;margin-top:4px">${dep.installNote}</div>` : ""}
           </div>`;
         }
         html += `</div></div>`;
@@ -1462,7 +1488,7 @@
           <div>
             <div style="display:flex;align-items:center;gap:8px">
               <span class="glitch-text" data-text="FORTNITE PC OPTIMIZER" style="font-weight:700;font-size:18px;letter-spacing:0.025em;color:#a78bfa">FORTNITE PC OPTIMIZER</span>
-              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.4.1</span>
+              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.4.2</span>
               <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#0a1a0a;color:#22c55e;border:1px solid #14532d">REAL PINGS</span>
             </div>
             <div class="mono" style="font-size:11px;color:#333">// measuring actual TCP latency to AWS game servers</div>

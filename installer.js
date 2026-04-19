@@ -34,25 +34,56 @@ function runPS(cmd, timeout = 60000) {
   });
 }
 
-// ── Download a file using PowerShell (handles HTTPS redirects properly) ──
+// ── Download a file with progress tracking (follows redirects) ──
 function downloadFile(url, destPath, onProgress) {
   return new Promise((resolve) => {
-    const psCmd = `
-      $ProgressPreference = 'SilentlyContinue'
-      try {
-        Invoke-WebRequest -Uri '${url}' -OutFile '${destPath.replace(/'/g, "''")}' -UseBasicParsing
-        Write-Output "SUCCESS"
-      } catch {
-        Write-Output "FAILED: $_"
-      }
-    `;
-    const child = exec(psCmd, { timeout: 300000, shell: "powershell.exe" }, (err, stdout) => {
-      if (err || !stdout.includes("SUCCESS")) {
-        resolve({ success: false, error: stdout || err?.message || "Download failed" });
-      } else {
-        resolve({ success: true, path: destPath });
-      }
-    });
+    const follow = (targetUrl, redirects = 0) => {
+      if (redirects > 10) return resolve({ success: false, error: "Too many redirects" });
+      const mod = targetUrl.startsWith("https") ? https : http;
+      mod.get(targetUrl, { headers: { "User-Agent": "FN-Optimizer" } }, (res) => {
+        // Handle redirects
+        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+          let next = res.headers.location;
+          if (next.startsWith("/")) {
+            const u = new URL(targetUrl);
+            next = u.protocol + "//" + u.host + next;
+          }
+          return follow(next, redirects + 1);
+        }
+        if (res.statusCode !== 200) {
+          return resolve({ success: false, error: `HTTP ${res.statusCode}` });
+        }
+
+        const totalBytes = parseInt(res.headers["content-length"] || "0", 10);
+        let downloadedBytes = 0;
+        const file = fs.createWriteStream(destPath);
+
+        res.on("data", (chunk) => {
+          downloadedBytes += chunk.length;
+          if (onProgress && totalBytes > 0) {
+            const pct = Math.round((downloadedBytes / totalBytes) * 100);
+            const mbDown = (downloadedBytes / 1024 / 1024).toFixed(1);
+            const mbTotal = (totalBytes / 1024 / 1024).toFixed(1);
+            onProgress({ percent: pct, downloadedMB: mbDown, totalMB: mbTotal });
+          } else if (onProgress) {
+            const mbDown = (downloadedBytes / 1024 / 1024).toFixed(1);
+            onProgress({ percent: -1, downloadedMB: mbDown, totalMB: "?" });
+          }
+        });
+
+        res.pipe(file);
+        file.on("finish", () => {
+          file.close(() => resolve({ success: true, path: destPath }));
+        });
+        file.on("error", (e) => {
+          fs.unlink(destPath, () => {});
+          resolve({ success: false, error: e.message });
+        });
+      }).on("error", (e) => {
+        resolve({ success: false, error: e.message });
+      });
+    };
+    follow(url);
   });
 }
 
@@ -131,9 +162,11 @@ class DependencyManager {
   }
 
   async installWireGuard(onProgress) {
-    if (onProgress) onProgress({ status: "downloading", message: "Downloading WireGuard installer..." });
+    if (onProgress) onProgress({ status: "downloading", message: "Downloading WireGuard installer...", percent: 0 });
     const destPath = path.join(DOWNLOADS_DIR, "wireguard-installer.exe");
-    const dl = await downloadFile("https://download.wireguard.com/windows-client/wireguard-installer.exe", destPath);
+    const dl = await downloadFile("https://download.wireguard.com/windows-client/wireguard-installer.exe", destPath, (p) => {
+      if (onProgress) onProgress({ status: "downloading", message: `Downloading WireGuard... ${p.downloadedMB}/${p.totalMB} MB`, percent: p.percent });
+    });
     if (!dl.success) return { success: false, error: "Download failed: " + dl.error };
 
     if (onProgress) onProgress({ status: "installing", message: "Installing WireGuard (admin required)..." });
@@ -238,9 +271,11 @@ class DependencyManager {
     const scewinDir = path.join(os.homedir(), ".fn-optimizer", "scewin");
     ensureDir(scewinDir);
 
-    if (onProgress) onProgress({ status: "downloading", message: "Downloading SceWin (SCEHUB) installer..." });
+    if (onProgress) onProgress({ status: "downloading", message: "Downloading SceWin (SCEHUB) installer...", percent: 0 });
     const destPath = path.join(DOWNLOADS_DIR, "DL_SCEWIN.exe");
-    const dl = await downloadFile("https://github.com/ab3lkaizen/SCEHUB/releases/download/1.2.0/DL_SCEWIN.exe", destPath);
+    const dl = await downloadFile("https://github.com/ab3lkaizen/SCEHUB/releases/download/1.2.0/DL_SCEWIN.exe", destPath, (p) => {
+      if (onProgress) onProgress({ status: "downloading", message: `Downloading SceWin... ${p.downloadedMB}/${p.totalMB} MB`, percent: p.percent });
+    });
     if (!dl.success) return { success: false, error: "Download failed: " + dl.error };
 
     if (onProgress) onProgress({ status: "installing", message: "Running SceWin installer..." });

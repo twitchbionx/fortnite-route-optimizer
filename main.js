@@ -420,8 +420,20 @@ ipcMain.handle("bios-disable-hyperv", async () => await biosHelper.disableHyperV
 
 // ── Installer / Dependency IPC Handlers ─────────────────────────
 ipcMain.handle("deps-check-all", async () => await installer.checkAll());
-ipcMain.handle("deps-install", async (_e, depId) => await installer.installDep(depId));
-ipcMain.handle("deps-install-all", async () => await installer.installAll());
+ipcMain.handle("deps-install", async (_e, depId) => {
+  return await installer.installDep(depId, (progress) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("deps-progress", { depId, ...progress });
+    }
+  });
+});
+ipcMain.handle("deps-install-all", async () => {
+  return await installer.installAll((progress) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("deps-progress", progress);
+    }
+  });
+});
 
 // Load config on startup
 tunnel.loadConfig();
