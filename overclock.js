@@ -50,11 +50,24 @@ class HWiNFOReader {
   }
 
   _detect() {
+    const home = os.homedir();
+    const hwinfoDir = path.join(home, ".fn-optimizer", "hwinfo");
     const paths = [
+      // Our portable install dir
+      path.join(hwinfoDir, "HWiNFO64.exe"),
+      path.join(hwinfoDir, "HWiNFO64", "HWiNFO64.exe"),
+      // Our downloads dir
+      path.join(home, ".fn-optimizer", "downloads", "HWiNFO64.exe"),
+      // Standard install locations
       "C:\\Program Files\\HWiNFO64\\HWiNFO64.exe",
       "C:\\Program Files (x86)\\HWiNFO64\\HWiNFO64.exe",
-      path.join(os.homedir(), "AppData\\Local\\Programs\\HWiNFO64\\HWiNFO64.exe"),
+      path.join(home, "AppData\\Local\\Programs\\HWiNFO64\\HWiNFO64.exe"),
       path.join(process.env.LOCALAPPDATA || "", "HWiNFO64\\HWiNFO64.exe"),
+      // User Desktop/Downloads
+      path.join(home, "Downloads", "HWiNFO64.exe"),
+      path.join(home, "Downloads", "HWiNFO64", "HWiNFO64.exe"),
+      path.join(home, "Desktop", "HWiNFO64.exe"),
+      path.join(home, "Desktop", "HWiNFO64", "HWiNFO64.exe"),
     ];
     for (const p of paths) {
       try {
@@ -65,7 +78,7 @@ class HWiNFOReader {
         }
       } catch(e) {}
     }
-    // Check PATH / winget
+    // Check PATH
     try {
       const r = require("child_process").execSync("where HWiNFO64.exe 2>nul", { timeout: 5000 }).toString().trim();
       if (r) { this.hwInfoPath = r.split("\n")[0].trim(); this.available = true; }

@@ -1,6 +1,6 @@
 {
   "name": "fortnite-route-optimizer",
-  "version": "3.5.4",
+  "version": "3.5.5",
   "description": "The ultimate Fortnite PC optimization suite",
   "main": "main.js",
   "scripts": {
@@ -56,7 +56,4 @@
     "electron-builder": "^24.9.1"
   },
   "dependencies": {
-    "electron-updater": "^6.1.7",
-    "ping": "^0.4.4"
-  }
-}
+  

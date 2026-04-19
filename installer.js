@@ -468,11 +468,24 @@ class DependencyManager {
 
   // ── HWiNFO64 ────────────────────────────────────────────────────
   async checkHWiNFO() {
+    const hwinfoDir = path.join(os.homedir(), ".fn-optimizer", "hwinfo");
+    const home = os.homedir();
     const paths = [
+      // Our portable install dir
+      path.join(hwinfoDir, "HWiNFO64.exe"),
+      path.join(hwinfoDir, "HWiNFO64", "HWiNFO64.exe"),
+      // Our downloads dir
+      path.join(DOWNLOADS_DIR, "HWiNFO64.exe"),
+      // Standard install locations
       "C:\\Program Files\\HWiNFO64\\HWiNFO64.exe",
       "C:\\Program Files (x86)\\HWiNFO64\\HWiNFO64.exe",
-      path.join(os.homedir(), "AppData\\Local\\Programs\\HWiNFO64\\HWiNFO64.exe"),
+      path.join(home, "AppData\\Local\\Programs\\HWiNFO64\\HWiNFO64.exe"),
       path.join(process.env.LOCALAPPDATA || "", "HWiNFO64\\HWiNFO64.exe"),
+      // User Desktop/Downloads
+      path.join(home, "Downloads", "HWiNFO64.exe"),
+      path.join(home, "Downloads", "HWiNFO64", "HWiNFO64.exe"),
+      path.join(home, "Desktop", "HWiNFO64.exe"),
+      path.join(home, "Desktop", "HWiNFO64", "HWiNFO64.exe"),
     ];
 
     for (const p of paths) {
@@ -499,34 +512,92 @@ class DependencyManager {
   }
 
   async installHWiNFO(onProgress) {
-    if (onProgress) onProgress({ status: "installing", message: "Installing HWiNFO64 via winget..." });
+    const hwinfoDir = path.join(os.homedir(), ".fn-optimizer", "hwinfo");
+    ensureDir(hwinfoDir);
 
-    // Try winget first (cleanest install)
-    const winget = await runCmd("winget install REALiX.HWiNFO --silent --accept-package-agreements --accept-source-agreements 2>nul", 300000);
-    if (winget.success) {
-      const check = await this.checkHWiNFO();
-      if (check.installed) return { success: true, path: check.path };
-    }
-
-    // Fallback: download from hwinfo.com
-    if (onProgress) onProgress({ status: "downloading", message: "Downloading HWiNFO64 installer...", percent: 0 });
-    const destPath = path.join(DOWNLOADS_DIR, "hwinfo64-setup.exe");
-    const dl = await downloadFile("https://www.sac.sk/download/utildiag/hwi_812.exe", destPath, (p) => {
+    // Direct download from official HWiNFO portable (no install needed)
+    if (onProgress) onProgress({ status: "downloading", message: "Downloading HWiNFO64 portable...", percent: 0 });
+    const portableUrl = "https://www.hwinfo.com/files/hwi_812.zip";
+    const portableDest = path.join(DOWNLOADS_DIR, "hwinfo64-portable.zip");
+    const dl = await downloadFile(portableUrl, portableDest, (p) => {
       if (onProgress) onProgress({ status: "downloading", message: `Downloading HWiNFO64... ${p.downloadedMB}/${p.totalMB} MB`, percent: p.percent });
     });
 
     if (dl.success) {
-      if (onProgress) onProgress({ status: "installing", message: "Installing HWiNFO64..." });
-      const installerPath = dl.path || destPath;
-      await runInstallerElevated(installerPath, "", true);
-      await new Promise(r => setTimeout(r, 2000));
+      if (onProgress) onProgress({ status: "installing", message: "Extracting HWiNFO64..." });
+      const zipPath = dl.path || portableDest;
+      // Extract portable zip to our hwinfo dir
+      const extract = await runPS(`Expand-Archive -Path '${zipPath.replace(/'/g, "''")}' -DestinationPath '${hwinfoDir.replace(/'/g, "''")}' -Force`, 30000);
+      if (extract.success) {
+        await new Promise(r => setTimeout(r, 1000));
+        // Search for HWiNFO64.exe in extracted files
+        const found = await this._findHWiNFOBinary(hwinfoDir);
+        if (found) {
+          // Enable shared memory support via registry for sensor reading
+          await runPS(`New-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsSM' -Value 1 -PropertyType DWord -Force 2>$null; New-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64\\VSB' -Name 'Run' -Value 0 -PropertyType DWord -Force 2>$null`, 5000);
+          return { success: true, path: found };
+        }
+      }
     }
+
+    // Fallback: try full installer download
+    if (onProgress) onProgress({ status: "downloading", message: "Trying HWiNFO64 installer...", percent: 0 });
+    const installerUrl = "https://www.hwinfo.com/files/hwi_812.exe";
+    const installerDest = path.join(DOWNLOADS_DIR, "hwinfo64-setup.exe");
+    const dl2 = await downloadFile(installerUrl, installerDest, (p) => {
+      if (onProgress) onProgress({ status: "downloading", message: `Downloading HWiNFO64 installer... ${p.downloadedMB}/${p.totalMB} MB`, percent: p.percent });
+    });
+
+    if (dl2.success) {
+      if (onProgress) onProgress({ status: "installing", message: "Installing HWiNFO64 (admin required)..." });
+      const installerPath = dl2.path || installerDest;
+      await runInstallerElevated(installerPath, "", true);
+      await new Promise(r => setTimeout(r, 3000));
+
+      const check = await this.checkHWiNFO();
+      if (check.installed) return { success: true, path: check.path };
+    }
+
+    // Last resort: try winget
+    if (onProgress) onProgress({ status: "installing", message: "Trying winget fallback..." });
+    await runCmd("winget install REALiX.HWiNFO --silent --accept-package-agreements --accept-source-agreements 2>nul", 300000);
 
     const check = await this.checkHWiNFO();
     return {
       success: check.installed,
       error: check.installed ? null : "Could not auto-install HWiNFO64. Download manually from https://www.hwinfo.com/download/",
     };
+  }
+
+  // Helper: search for HWiNFO64.exe in a directory tree
+  async _findHWiNFOBinary(searchDir) {
+    const names = ["HWiNFO64.exe", "HWiNFO64.EXE", "hwinfo64.exe"];
+    // Direct check
+    for (const name of names) {
+      const p = path.join(searchDir, name);
+      try { if (fs.existsSync(p)) return p; } catch(e) {}
+    }
+    // One level deep
+    try {
+      const entries = fs.readdirSync(searchDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          for (const name of names) {
+            const p = path.join(searchDir, entry.name, name);
+            try { if (fs.existsSync(p)) return p; } catch(e) {}
+          }
+        }
+      }
+    } catch(e) {}
+    // Recursive dir search
+    try {
+      const findResult = await runCmd(`dir /s /b "${searchDir}\\*HWiNFO64*" 2>nul`, 10000);
+      if (findResult.success && findResult.output) {
+        const found = findResult.output.split("\n").find(l => l.trim().toLowerCase().endsWith(".exe"));
+        if (found && found.trim()) return found.trim();
+      }
+    } catch(e) {}
+    return null;
   }
 
   // ── Install all missing dependencies ────────────────────────────
