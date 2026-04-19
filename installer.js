@@ -226,13 +226,75 @@ class DependencyManager {
       name: "SceWin (AMISCE)",
       id: "scewin",
       desc: "BIOS settings editor — enables CPU multiplier & voltage control from Windows",
-      downloadUrl: null, // Not freely available from a single URL
-      size: "~2 MB",
+      downloadUrl: "https://github.com/ab3lkaizen/SCEHUB/releases/download/1.2.0/DL_SCEWIN.exe",
+      size: "~9 MB",
       required: false,
       feature: "CPU/RAM Overclock",
-      installNote: "SceWin (AMISCE) is an AMI BIOS tool. Place SCEWNX64.exe in: " + scewinDir,
-      manualOnly: true,
+      installNote: "Downloads SCEHUB installer which extracts SceWin binaries automatically.",
     };
+  }
+
+  async installSceWin(onProgress) {
+    const scewinDir = path.join(os.homedir(), ".fn-optimizer", "scewin");
+    ensureDir(scewinDir);
+
+    if (onProgress) onProgress({ status: "downloading", message: "Downloading SceWin (SCEHUB) installer..." });
+    const destPath = path.join(DOWNLOADS_DIR, "DL_SCEWIN.exe");
+    const dl = await downloadFile("https://github.com/ab3lkaizen/SCEHUB/releases/download/1.2.0/DL_SCEWIN.exe", destPath);
+    if (!dl.success) return { success: false, error: "Download failed: " + dl.error };
+
+    if (onProgress) onProgress({ status: "installing", message: "Running SceWin installer..." });
+
+    // Run the SCEHUB downloader — it extracts SceWin binaries
+    // Try running it with /S for silent, and set working dir to scewinDir
+    const result = await runInstallerElevated(destPath, `/D=${scewinDir}`, true);
+
+    // Wait a moment for files to appear
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Check common output locations for the binary
+    const searchPaths = [
+      path.join(scewinDir, "SCEWNX64.exe"),
+      path.join(scewinDir, "scewin_64.exe"),
+      path.join(scewinDir, "SCEWIN_64.exe"),
+      path.join(scewinDir, "SCEWIN", "SCEWNX64.exe"),
+      path.join(scewinDir, "SCEWIN", "scewin_64.exe"),
+    ];
+
+    for (const p of searchPaths) {
+      try { if (fs.existsSync(p)) return { success: true, path: p }; } catch(e) {}
+    }
+
+    // Also search recursively in scewinDir for any scewin executable
+    try {
+      const findResult = await runCmd(`dir /s /b "${scewinDir}\\*scewin*" "${scewinDir}\\*SCEWN*" 2>nul`, 10000);
+      if (findResult.success && findResult.output) {
+        const found = findResult.output.split("\n")[0].trim();
+        if (found && fs.existsSync(found)) return { success: true, path: found };
+      }
+    } catch(e) {}
+
+    // Also check if it extracted to a default location
+    const defaultPaths = [
+      path.join(os.homedir(), "SCEWIN", "SCEWNX64.exe"),
+      path.join(os.homedir(), "Desktop", "SCEWIN", "SCEWNX64.exe"),
+      "C:\\SCEWIN\\SCEWNX64.exe",
+      "C:\\SCEWNX64.exe",
+    ];
+    for (const p of defaultPaths) {
+      try {
+        if (fs.existsSync(p)) {
+          // Copy it to our scewinDir for consistent access
+          const dest = path.join(scewinDir, path.basename(p));
+          fs.copyFileSync(p, dest);
+          return { success: true, path: dest };
+        }
+      } catch(e) {}
+    }
+
+    // Verify install
+    const check = await this.checkSceWin();
+    return { success: check.installed, error: check.installed ? null : "Installer ran but SceWin binary not found. It may need to be run manually — check: " + destPath };
   }
 
   // ── Install all missing dependencies ────────────────────────────
@@ -258,8 +320,14 @@ class DependencyManager {
       results.nvidiaSmi = { success: status.nvidiaSmi.installed, skipped: true };
     }
 
-    // SceWin is manual-only
-    results.scewin = { success: status.scewin.installed, skipped: true, manual: !status.scewin.installed };
+    if (!status.scewin.installed) {
+      if (onProgress) onProgress({ dep: "scewin", status: "installing" });
+      results.scewin = await this.installSceWin((p) => {
+        if (onProgress) onProgress({ dep: "scewin", ...p });
+      });
+    } else {
+      results.scewin = { success: true, skipped: true };
+    }
 
     return results;
   }
@@ -269,7 +337,7 @@ class DependencyManager {
     switch (depId) {
       case "wireguard": return await this.installWireGuard(onProgress);
       case "nvidia-smi": return await this.installNvidiaSmi(onProgress);
-      case "scewin": return { success: false, error: "SceWin must be installed manually. Place SCEWNX64.exe in " + path.join(os.homedir(), ".fn-optimizer", "scewin") };
+      case "scewin": return await this.installSceWin(onProgress);
       default: return { success: false, error: "Unknown dependency: " + depId };
     }
   }
