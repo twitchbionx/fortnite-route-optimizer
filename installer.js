@@ -292,7 +292,7 @@ class DependencyManager {
     const scewinDir = path.join(os.homedir(), ".fn-optimizer", "scewin");
     ensureDir(scewinDir);
 
-    if (onProgress) onProgress({ status: "downloading", message: "Downloading SceWin (SCEHUB) installer...", percent: 0 });
+    if (onProgress) onProgress({ status: "downloading", message: "Downloading SceWin (SCEHUB)...", percent: 0 });
     const destPath = path.join(DOWNLOADS_DIR, "DL_SCEWIN.exe");
     const dl = await downloadFile("https://github.com/ab3lkaizen/SCEHUB/releases/download/1.2.0/DL_SCEWIN.exe", destPath, (p) => {
       if (onProgress) onProgress({ status: "downloading", message: `Downloading SceWin... ${p.downloadedMB}/${p.totalMB} MB`, percent: p.percent });
@@ -300,58 +300,112 @@ class DependencyManager {
     if (!dl.success) return { success: false, error: "Download failed: " + dl.error };
     const installerPath = dl.path || destPath;
 
-    if (onProgress) onProgress({ status: "installing", message: "Running SceWin installer..." });
+    if (onProgress) onProgress({ status: "installing", message: "Launching SceWin installer — follow the prompts if a window appears..." });
 
-    // Run the SCEHUB downloader — it extracts SceWin binaries
-    // Try running it with /S for silent, and set working dir to scewinDir
-    const result = await runInstallerElevated(installerPath, `/D=${scewinDir}`, true);
+    // DL_SCEWIN.exe is a custom downloader/extractor from SCEHUB, NOT an NSIS installer.
+    // It does not support /S or /SILENT flags.
+    // Method 1: Run it non-silently so user can interact, with working dir set to scewinDir
+    const psCmd1 = `Start-Process -FilePath '${installerPath.replace(/'/g, "''")}' -WorkingDirectory '${scewinDir.replace(/'/g, "''")}' -Verb RunAs -Wait`;
+    await runPS(psCmd1, 300000);
 
-    // Wait a moment for files to appear
-    await new Promise(r => setTimeout(r, 2000));
+    // Wait for files to appear
+    await new Promise(r => setTimeout(r, 3000));
 
-    // Check common output locations for the binary
-    const searchPaths = [
+    if (onProgress) onProgress({ status: "searching", message: "Searching for SceWin binaries..." });
+
+    // Search everywhere for the binary
+    const found = await this._findSceWinBinary(scewinDir);
+    if (found) return { success: true, path: found };
+
+    // Method 2: Maybe it's a self-extractor — try 7z/tar to extract it
+    try {
+      const extract7z = await runCmd(`"C:\\Program Files\\7-Zip\\7z.exe" x "${installerPath}" -o"${scewinDir}" -y 2>nul`, 30000);
+      if (extract7z.success) {
+        await new Promise(r => setTimeout(r, 1000));
+        const found2 = await this._findSceWinBinary(scewinDir);
+        if (found2) return { success: true, path: found2 };
+      }
+    } catch(e) {}
+
+    // Method 3: Try PowerShell Expand-Archive in case it's a renamed zip
+    try {
+      const zipCopy = installerPath.replace(/\.exe$/i, ".zip");
+      fs.copyFileSync(installerPath, zipCopy);
+      await runPS(`Expand-Archive -Path '${zipCopy.replace(/'/g, "''")}' -DestinationPath '${scewinDir.replace(/'/g, "''")}' -Force`, 30000);
+      await new Promise(r => setTimeout(r, 1000));
+      const found3 = await this._findSceWinBinary(scewinDir);
+      if (found3) return { success: true, path: found3 };
+    } catch(e) {}
+
+    // Final check
+    const check = await this.checkSceWin();
+    return {
+      success: check.installed,
+      error: check.installed ? null : "SceWin binary not found after install. The installer was downloaded to: " + installerPath + "\nTry running it manually and placing SCEWNX64.exe in: " + scewinDir,
+    };
+  }
+
+  // Helper: search common locations for SceWin binary and copy to scewinDir
+  async _findSceWinBinary(scewinDir) {
+    // Check scewinDir and subdirs
+    const localPaths = [
       path.join(scewinDir, "SCEWNX64.exe"),
       path.join(scewinDir, "scewin_64.exe"),
       path.join(scewinDir, "SCEWIN_64.exe"),
       path.join(scewinDir, "SCEWIN", "SCEWNX64.exe"),
       path.join(scewinDir, "SCEWIN", "scewin_64.exe"),
+      path.join(scewinDir, "AMISCE", "SCEWNX64.exe"),
     ];
 
-    for (const p of searchPaths) {
-      try { if (fs.existsSync(p)) return { success: true, path: p }; } catch(e) {}
+    for (const p of localPaths) {
+      try { if (fs.existsSync(p)) return p; } catch(e) {}
     }
 
-    // Also search recursively in scewinDir for any scewin executable
+    // Recursive search in scewinDir
     try {
-      const findResult = await runCmd(`dir /s /b "${scewinDir}\\*scewin*" "${scewinDir}\\*SCEWN*" 2>nul`, 10000);
+      const findResult = await runCmd(`dir /s /b "${scewinDir}\\*SCEWN*" "${scewinDir}\\*scewin*" 2>nul`, 10000);
       if (findResult.success && findResult.output) {
-        const found = findResult.output.split("\n")[0].trim();
-        if (found && fs.existsSync(found)) return { success: true, path: found };
+        const found = findResult.output.split("\n").find(l => l.trim().toLowerCase().endsWith(".exe"));
+        if (found && found.trim()) return found.trim();
       }
     } catch(e) {}
 
-    // Also check if it extracted to a default location
-    const defaultPaths = [
+    // Check common system locations and copy to scewinDir if found
+    const systemPaths = [
       path.join(os.homedir(), "SCEWIN", "SCEWNX64.exe"),
       path.join(os.homedir(), "Desktop", "SCEWIN", "SCEWNX64.exe"),
+      path.join(os.homedir(), "Downloads", "SCEWNX64.exe"),
+      path.join(os.homedir(), "Downloads", "SCEWIN", "SCEWNX64.exe"),
       "C:\\SCEWIN\\SCEWNX64.exe",
       "C:\\SCEWNX64.exe",
+      path.join(DOWNLOADS_DIR, "SCEWIN", "SCEWNX64.exe"),
+      path.join(DOWNLOADS_DIR, "SCEWNX64.exe"),
     ];
-    for (const p of defaultPaths) {
+
+    for (const p of systemPaths) {
       try {
         if (fs.existsSync(p)) {
-          // Copy it to our scewinDir for consistent access
           const dest = path.join(scewinDir, path.basename(p));
           fs.copyFileSync(p, dest);
-          return { success: true, path: dest };
+          return dest;
         }
       } catch(e) {}
     }
 
-    // Verify install
-    const check = await this.checkSceWin();
-    return { success: check.installed, error: check.installed ? null : "Installer ran but SceWin binary not found. It may need to be run manually — check: " + destPath };
+    // Global search for SCEWNX64.exe on C drive
+    try {
+      const globalSearch = await runCmd(`where /R C:\\ SCEWNX64.exe 2>nul`, 15000);
+      if (globalSearch.success && globalSearch.output) {
+        const found = globalSearch.output.split("\n")[0].trim();
+        if (found && fs.existsSync(found)) {
+          const dest = path.join(scewinDir, path.basename(found));
+          try { fs.copyFileSync(found, dest); } catch(e) {}
+          return dest;
+        }
+      }
+    } catch(e) {}
+
+    return null;
   }
 
   // ── Install all missing dependencies ────────────────────────────
