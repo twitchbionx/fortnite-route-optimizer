@@ -718,8 +718,22 @@
 
     if (window.api.onUpdateStatus) {
       window.api.onUpdateStatus((data) => {
-        state.update = data;
-        render();
+        // Only re-render if the status actually changed
+        const prev = state.update;
+        if (prev.status !== data.status || prev.newVersion !== data.newVersion || prev.downloadProgress !== data.downloadProgress) {
+          state.update = data;
+          // For download progress, update just the progress bar if possible
+          if (data.status === "downloading") {
+            const bar = document.getElementById("update-progress-bar");
+            const pct = document.getElementById("update-progress-pct");
+            if (bar && pct) {
+              bar.style.width = data.downloadProgress + "%";
+              pct.textContent = data.downloadProgress + "%";
+              return; // skip full render
+            }
+          }
+          render();
+        }
       });
     }
 
@@ -1438,7 +1452,7 @@
 
       // Update notification bar
       if (s.update.status === "available") {
-        html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 24px;background:linear-gradient(90deg,#1a0a2e,#0f0a1e);border-bottom:1px solid #2e1065;animation:slideDown 0.3s ease">
+        html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 24px;background:linear-gradient(90deg,#1a0a2e,#0f0a1e);border-bottom:1px solid #2e1065">
           <div style="display:flex;align-items:center;gap:8px">
             <span style="font-size:14px">\u{1F680}</span>
             <span class="mono" style="font-size:11px;color:#a78bfa">v${s.update.newVersion} available</span>
@@ -1450,16 +1464,16 @@
           </div>
         </div>`;
       } else if (s.update.status === "downloading") {
-        html += `<div style="display:flex;align-items:center;gap:12px;padding:8px 24px;background:#0a0a18;border-bottom:1px solid #1a1a2e;animation:slideDown 0.3s ease">
+        html += `<div style="display:flex;align-items:center;gap:12px;padding:8px 24px;background:#0a0a18;border-bottom:1px solid #1a1a2e">
           <span class="animate-spin" style="font-size:12px;display:inline-block">\u{1F504}</span>
           <span class="mono" style="font-size:11px;color:#a78bfa">Downloading v${s.update.newVersion}...</span>
           <div style="flex:1;height:4px;background:#1a1a2e;border-radius:2px;overflow:hidden">
-            <div style="height:100%;width:${s.update.downloadProgress}%;background:linear-gradient(90deg,#7c3aed,#a78bfa);border-radius:2px;transition:width 0.3s"></div>
+            <div id="update-progress-bar" style="height:100%;width:${s.update.downloadProgress}%;background:linear-gradient(90deg,#7c3aed,#a78bfa);border-radius:2px;transition:width 0.3s"></div>
           </div>
-          <span class="mono" style="font-size:11px;color:#555">${s.update.downloadProgress}%</span>
+          <span id="update-progress-pct" class="mono" style="font-size:11px;color:#555">${s.update.downloadProgress}%</span>
         </div>`;
       } else if (s.update.status === "downloaded") {
-        html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 24px;background:linear-gradient(90deg,#021a0a,#0a1a0a);border-bottom:1px solid #14532d;animation:slideDown 0.3s ease">
+        html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 24px;background:linear-gradient(90deg,#021a0a,#0a1a0a);border-bottom:1px solid #14532d">
           <div style="display:flex;align-items:center;gap:8px">
             <span style="font-size:14px">\u2705</span>
             <span class="mono" style="font-size:11px;color:#22c55e">v${s.update.newVersion} ready to install</span>
@@ -1569,7 +1583,7 @@
           <div>
             <div style="display:flex;align-items:center;gap:8px">
               <span class="glitch-text" data-text="FORTNITE PC OPTIMIZER" style="font-weight:700;font-size:18px;letter-spacing:0.025em;color:#a78bfa">FORTNITE PC OPTIMIZER</span>
-              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.7.4</span>
+              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.7.5</span>
               <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#0a1a0a;color:#22c55e;border:1px solid #14532d">REAL PINGS</span>
             </div>
             <div class="mono" style="font-size:11px;color:#333">// measuring actual TCP latency to AWS game servers</div>
