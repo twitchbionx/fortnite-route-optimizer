@@ -98,7 +98,7 @@ class HWiNFOReader {
     return r.success && r.output.toLowerCase().includes("hwinfo64");
   }
 
-  // Force-enable Shared Memory in registry and launch HWiNFO if not running
+  // Force-enable Shared Memory and ensure HWiNFO is running with it active
   async ensureRunning() {
     // Enable Shared Memory Support in HWiNFO settings via registry
     await runPS(`
@@ -108,14 +108,41 @@ class HWiNFOReader {
       Set-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64' -Name 'SensorsOnly' -Value 1 -Type DWord -Force
     `, 5000);
 
+    // Also write an INI file for portable HWiNFO versions
+    if (!this.available) this.redetect();
+    if (this.hwInfoPath) {
+      try {
+        const iniPath = path.join(path.dirname(this.hwInfoPath), "HWiNFO64.INI");
+        const iniContent = "[Settings]\nSensorsSM=1\nSensorsOnly=1\nMinimize=1\nAutoStart=1\n";
+        fs.writeFileSync(iniPath, iniContent);
+      } catch(e) {}
+    }
+
     // Check if already running
     const running = await this.isRunning();
-    if (running) return { launched: false, alreadyRunning: true };
 
-    // Not running — try to launch it
-    if (!this.available) this.redetect();
+    // Check if VSB registry actually has sensor data (not just the path)
+    const vsbCheck = await runPS(`
+      $base = 'HKCU:\\Software\\HWiNFO64\\VSB'
+      if (!(Test-Path $base)) { Write-Output 'NO_VSB'; return }
+      $v = Get-ItemProperty -Path $base -ErrorAction SilentlyContinue
+      if ($v.Label0) { Write-Output "HAS_DATA:$($v.Label0)" } else { Write-Output 'NO_DATA' }
+    `, 5000);
+
+    const hasData = vsbCheck.success && vsbCheck.output.includes("HAS_DATA");
+
+    if (running && hasData) {
+      return { launched: false, alreadyRunning: true, hasData: true };
+    }
+
+    // HWiNFO is running but shared memory isn't active — need to restart it
+    if (running && !hasData) {
+      await runCmd('taskkill /IM HWiNFO64.exe /F 2>nul', 5000);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    // Find the binary
     if (!this.available) {
-      // Last resort: try common paths even if _detect failed
       const fallbacks = [
         "C:\\Program Files\\HWiNFO64\\HWiNFO64.exe",
         path.join(os.homedir(), ".fn-optimizer", "hwinfo", "HWiNFO64.exe"),
@@ -130,21 +157,26 @@ class HWiNFOReader {
       return { launched: false, error: "HWiNFO64 not found — install it from the Dependencies tab" };
     }
 
-    // Launch in sensors-only mode (minimized, no main window)
+    // Launch HWiNFO in sensors-only mode
     await runPS(`Start-Process -FilePath '${this.hwInfoPath.replace(/'/g, "''")}' -WindowStyle Minimized`, 5000);
 
-    // Wait up to 10 seconds for it to start and populate the registry
-    for (let i = 0; i < 10; i++) {
+    // Wait up to 25 seconds for VSB to get populated with actual sensor data
+    for (let i = 0; i < 25; i++) {
       await new Promise(r => setTimeout(r, 1000));
-      const check = await runPS(`Test-Path 'HKCU:\\Software\\HWiNFO64\\VSB'`, 3000);
-      if (check.success && check.output.includes("True")) {
-        // Wait a bit more for sensors to populate
+      const check = await runPS(`
+        $base = 'HKCU:\\Software\\HWiNFO64\\VSB'
+        if (!(Test-Path $base)) { Write-Output 'NO_VSB'; return }
+        $v = Get-ItemProperty -Path $base -ErrorAction SilentlyContinue
+        if ($v.Label0) { Write-Output "HAS_DATA:$($v.Label0)" } else { Write-Output 'NO_DATA' }
+      `, 3000);
+      if (check.success && check.output.includes("HAS_DATA")) {
+        // Wait 2 more seconds for all sensors to populate
         await new Promise(r => setTimeout(r, 2000));
-        return { launched: true, path: this.hwInfoPath };
+        return { launched: true, path: this.hwInfoPath, hasData: true };
       }
     }
 
-    return { launched: true, path: this.hwInfoPath, warning: "HWiNFO started but VSB registry not yet populated — sensors may need a moment" };
+    return { launched: true, path: this.hwInfoPath, hasData: false, warning: "HWiNFO started but sensor data not detected after 25s. Shared Memory may not be supported in this version." };
   }
 
   // Read sensor values from HWiNFO registry
@@ -329,17 +361,69 @@ class SceWinManager {
     const dir = path.dirname(exportPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    const r = await runCmd(`"${this.scewinPath}" /o /s "${exportPath}"`, 30000);
-    if (!r.success) return { success: false, error: r.error };
+    // Clean up old export file so we can detect if a new one was created
+    try { fs.unlinkSync(exportPath); } catch(e) {}
 
-    try {
-      const raw = fs.readFileSync(exportPath, "utf8");
-      const settings = this._parseExport(raw);
-      this.currentSettings = settings;
-      return { success: true, settings };
-    } catch (e) {
-      return { success: false, error: e.message };
+    // AMISCE/SceWin needs to run from its own directory and with admin elevation
+    // Try multiple command syntaxes since different versions use different flags
+    const scewinDir = path.dirname(this.scewinPath);
+    const scewinExe = path.basename(this.scewinPath);
+    const cmds = [
+      // Standard: /o = output, /s = script file path
+      `cd /d "${scewinDir}" && "${scewinExe}" /o /s "${exportPath}"`,
+      // Some versions: /o without /s, just the output path
+      `cd /d "${scewinDir}" && "${scewinExe}" /o "${exportPath}"`,
+      // With /lang flag for full setting names
+      `cd /d "${scewinDir}" && "${scewinExe}" /o /lang /s "${exportPath}"`,
+      // Elevated via PowerShell
+      `powershell -Command "Start-Process -FilePath '${this.scewinPath.replace(/'/g, "''")}' -ArgumentList '/o /s \"${exportPath.replace(/'/g, "''")}\"' -WorkingDirectory '${scewinDir.replace(/'/g, "''")}' -Verb RunAs -Wait -WindowStyle Hidden"`,
+      // Elevated without /s
+      `powershell -Command "Start-Process -FilePath '${this.scewinPath.replace(/'/g, "''")}' -ArgumentList '/o \"${exportPath.replace(/'/g, "''")}\"' -WorkingDirectory '${scewinDir.replace(/'/g, "''")}' -Verb RunAs -Wait -WindowStyle Hidden"`,
+    ];
+
+    for (const cmd of cmds) {
+      const r = await runCmd(cmd, 30000);
+      // Check if the export file was actually created and has content
+      try {
+        if (fs.existsSync(exportPath)) {
+          const raw = fs.readFileSync(exportPath, "utf8");
+          if (raw.length > 100 && (raw.includes("Setup Question") || raw.includes("Token"))) {
+            const settings = this._parseExport(raw);
+            const count = Object.keys(settings).length;
+            if (count > 0) {
+              this.currentSettings = settings;
+              return { success: true, settings, settingCount: count };
+            }
+          }
+        }
+      } catch (e) { /* try next command */ }
     }
+
+    // Last attempt: check if SceWin dumped the export somewhere else (like its own dir)
+    const altPaths = [
+      path.join(scewinDir, "AMISCE.txt"),
+      path.join(scewinDir, "setup.txt"),
+      path.join(scewinDir, "export.txt"),
+      path.join(scewinDir, "scewin.txt"),
+    ];
+    for (const alt of altPaths) {
+      try {
+        if (fs.existsSync(alt)) {
+          const raw = fs.readFileSync(alt, "utf8");
+          if (raw.length > 100 && (raw.includes("Setup Question") || raw.includes("Token"))) {
+            const settings = this._parseExport(raw);
+            if (Object.keys(settings).length > 0) {
+              this.currentSettings = settings;
+              // Copy to expected path for future use
+              try { fs.copyFileSync(alt, exportPath); } catch(e) {}
+              return { success: true, settings, settingCount: Object.keys(settings).length };
+            }
+          }
+        }
+      } catch(e) {}
+    }
+
+    return { success: false, error: "SceWin ran but no valid export file was produced. The AMISCE version may need different command syntax." };
   }
 
   _parseExport(raw) {
