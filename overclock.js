@@ -458,98 +458,38 @@ class SceWinManager {
       try { fs.unlinkSync(f); } catch(e) {}
     }
 
-    // Create batch file that runs AMISCE with admin rights from its own directory
-    // Includes full diagnostics: driver check, Secure Boot status, driver install attempt
+    // SCEWIN_64.exe works from admin CMD but has "Press any key to continue" which
+    // blocks hidden batch execution. We pipe input via echo to bypass the pause.
+    // The batch runs elevated via PowerShell -Verb RunAs.
     const batchContent = `@echo off
 cd /d "${scewinDir}"
-echo ============================================ > "${logPath}"
-echo AMISCE Export Diagnostic Log >> "${logPath}"
-echo Date: %DATE% %TIME% >> "${logPath}"
-echo CWD: %CD% >> "${logPath}"
-echo Exe: ${scewinExe} >> "${logPath}"
-echo ============================================ >> "${logPath}"
-echo. >> "${logPath}"
+echo Running AMISCE export... > "${logPath}"
 
-echo === Checking files in SceWin directory === >> "${logPath}"
-dir /b >> "${logPath}" 2>&1
-echo. >> "${logPath}"
-
-echo === Checking for driver file === >> "${logPath}"
-if exist "amifldrv64.sys" (
-  echo FOUND: amifldrv64.sys >> "${logPath}"
-) else if exist "amifldrv.sys" (
-  echo FOUND: amifldrv.sys >> "${logPath}"
-) else (
-  echo WARNING: No AMI driver file found in directory! >> "${logPath}"
-  echo Looking elsewhere... >> "${logPath}"
-  dir /s /b *.sys >> "${logPath}" 2>&1
-)
-echo. >> "${logPath}"
-
-echo === Secure Boot Status === >> "${logPath}"
-powershell -Command "try { $sb = Confirm-SecureBootUEFI; Write-Output \\"SecureBoot: $sb\\" } catch { Write-Output \\"SecureBoot: Unable to check (may be disabled)\\" }" >> "${logPath}" 2>&1
-echo. >> "${logPath}"
-
-echo === Driver Signature Enforcement === >> "${logPath}"
-bcdedit /enum {current} | findstr /i "nointegritychecks testsigning" >> "${logPath}" 2>&1
-echo. >> "${logPath}"
-
-echo === Current kernel driver services matching ami === >> "${logPath}"
-sc query type= driver | findstr /i "ami" >> "${logPath}" 2>&1
-echo. >> "${logPath}"
-
-echo === Try to manually create and start the AMI driver service === >> "${logPath}"
-if exist "amifldrv64.sys" (
-  echo Installing amifldrv64.sys as service... >> "${logPath}"
-  sc create amifldrv64 type= kernel binPath= "%CD%\\amifldrv64.sys" >> "${logPath}" 2>&1
-  sc start amifldrv64 >> "${logPath}" 2>&1
-  echo Driver service start result: %ERRORLEVEL% >> "${logPath}"
-  echo. >> "${logPath}"
-)
-
-echo === Attempt 1: /o /s === >> "${logPath}"
-"${scewinExe}" /o /s "${exportPath}" >> "${logPath}" 2>&1
+echo. | "${scewinExe}" /o /s "${exportPath}" >> "${logPath}" 2>&1
 if exist "${exportPath}" (
-  echo SUCCESS: export file created >> "${logPath}"
-  goto cleanup
+  echo SUCCESS: /o /s created export file >> "${logPath}"
+  exit /b 0
 )
 
-echo === Attempt 2: /o (CWD output) === >> "${logPath}"
-"${scewinExe}" /o >> "${logPath}" 2>&1
+echo First attempt failed, trying /o to CWD... >> "${logPath}"
+echo. | "${scewinExe}" /o >> "${logPath}" 2>&1
 if exist "${amisceOutput}" (
   copy /Y "${amisceOutput}" "${exportPath}" >> "${logPath}" 2>&1
   echo SUCCESS: copied AMISCE.txt >> "${logPath}"
-  goto cleanup
+  exit /b 0
 )
 
-echo === Attempt 3: /o /lang /s === >> "${logPath}"
-"${scewinExe}" /o /lang /s "${exportPath}" >> "${logPath}" 2>&1
-if exist "${exportPath}" (
-  echo SUCCESS: export with /lang >> "${logPath}"
-  goto cleanup
-)
-
-echo === Attempt 4: /o /s with /g (get all) === >> "${logPath}"
-"${scewinExe}" /o /s "${exportPath}" /g >> "${logPath}" 2>&1
-
-echo === All attempts completed === >> "${logPath}"
-echo Checking for any new .txt files: >> "${logPath}"
-dir /b *.txt >> "${logPath}" 2>&1
-
-:cleanup
-echo. >> "${logPath}"
-echo === Cleanup: stopping driver service === >> "${logPath}"
-sc stop amifldrv64 >> "${logPath}" 2>&1
-sc delete amifldrv64 >> "${logPath}" 2>&1
-echo DONE >> "${logPath}"
+echo Both attempts failed >> "${logPath}"
+dir /b >> "${logPath}" 2>&1
+exit /b 1
 `;
 
     fs.writeFileSync(batchPath, batchContent);
 
-    // Run the batch file elevated via PowerShell UAC prompt
-    // -Wait ensures we wait for completion, -Verb RunAs triggers UAC
+    // Run elevated. Key fix: use cmd /c with echo piped to handle "Press any key" pause.
+    // -Verb RunAs triggers UAC elevation prompt.
     const elevatedResult = await runPS(`
-      $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c "${batchPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"' -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+      $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c ""${batchPath.replace(/\\/g, "\\\\").replace(/"/g, '""')}""' -Verb RunAs -Wait -PassThru -WindowStyle Hidden
       Write-Output "ExitCode:$($proc.ExitCode)"
     `, 60000);
 
@@ -559,6 +499,17 @@ echo DONE >> "${logPath}"
     let logContent = "";
     try { logContent = fs.readFileSync(logPath, "utf8"); } catch(e) {}
     this._lastExportLog = logContent;
+
+    // Also check if the export file ended up somewhere else due to "Press any key" causing
+    // the output path to be relative to the wrong directory
+    if (!fs.existsSync(exportPath)) {
+      // Check if it was created in the scewin directory with the expected filename
+      const altName = path.basename(exportPath);
+      const altPath = path.join(scewinDir, altName);
+      if (fs.existsSync(altPath)) {
+        try { fs.copyFileSync(altPath, exportPath); } catch(e) {}
+      }
+    }
 
     // Check if export file was created
     const checkFiles = [exportPath, amisceOutput];
@@ -610,27 +561,18 @@ echo DONE >> "${logPath}"
     // If UAC was denied or failed, provide clear feedback
     const uacDenied = (elevatedResult.error || "").includes("canceled") || (elevatedResult.error || "").includes("denied") || (elevatedResult.error || "").includes("not recognized");
 
-    // Parse diagnostic info from log
-    const hasDriver = logContent.includes("FOUND: amifldrv64.sys") || logContent.includes("FOUND: amifldrv.sys");
-    const noDriver = logContent.includes("No AMI driver file found");
-    const secureBootOn = logContent.includes("SecureBoot: True");
-    const driverServiceFailed = logContent.includes("StartService FAILED") || logContent.includes("Access is denied");
     const driverError = logContent.includes("Unable to load driver");
 
     let errorMsg = "SceWin export failed. ";
     if (uacDenied || (!logContent && !elevatedResult.success)) {
-      errorMsg += "Admin elevation may have been denied. Click 'Yes' on the UAC prompt.";
-    } else if (noDriver) {
-      errorMsg += "AMISCE driver file (amifldrv64.sys) is MISSING from the SceWin directory. Re-download SCEHUB and make sure all files are extracted.";
-    } else if (secureBootOn && driverError) {
-      errorMsg += "Secure Boot is ENABLED and blocking the AMISCE driver. Disable Secure Boot in your BIOS to allow SceWin to work, then restart.";
+      errorMsg += "Admin elevation required — click 'Yes' on the UAC prompt when it appears.";
     } else if (driverError) {
-      errorMsg += "AMISCE driver won't load. Possible fixes: (1) Disable Secure Boot in BIOS, (2) Boot Windows with driver signature enforcement disabled (Shift+Restart → Troubleshoot → Startup Settings → Disable driver signature enforcement), (3) Restart PC.";
+      errorMsg += "AMISCE driver won't load. Try: (1) Disable Secure Boot in BIOS, (2) Boot with driver signature enforcement disabled.";
     } else {
-      errorMsg += "Unknown failure.";
+      errorMsg += logContent ? `Log: ${logContent.substring(0, 300)}` : "No log output — batch may have timed out.";
     }
 
-    return { success: false, error: errorMsg, helpOutput: helpOutput?.substring(0, 500), log: logContent };
+    return { success: false, error: errorMsg, log: logContent };
   }
 
   _parseExport(raw) {
@@ -1801,16 +1743,8 @@ class AIOverclockEngine {
     const exported = await this.scewin.exportCurrentSettings();
     if (!exported.success) {
       this._log("analyzing", "bios-discovery-fail", "Failed to export BIOS settings: " + exported.error);
-      if (exported.helpOutput) {
-        this._log("analyzing", "scewin-help", "SceWin help: " + exported.helpOutput);
-      }
       if (exported.log) {
-        // Split log into chunks so it fits in the UI
-        const logLines = exported.log.split("\n").filter(l => l.trim());
-        for (let i = 0; i < logLines.length; i += 5) {
-          const chunk = logLines.slice(i, i + 5).join(" | ");
-          this._log("analyzing", "scewin-diag", chunk);
-        }
+        this._log("analyzing", "scewin-log", "Batch log: " + exported.log.replace(/\r?\n/g, " | ").substring(0, 500));
       }
       return this.biosMap;
     }
