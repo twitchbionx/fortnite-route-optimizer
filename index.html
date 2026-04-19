@@ -1,0 +1,2341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; font-src https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com"/>
+  <title>Fortnite PC Optimizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; width: 100%; overflow: hidden; user-select: none; -webkit-app-region: no-drag; }
+    body { background: #06060e; color: #ccc; font-family: 'Inter', system-ui, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0a0a14; }
+    ::-webkit-scrollbar-thumb { background: #1a1a2e; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #2a2a3e; }
+
+    .mono { font-family: 'Fira Code', monospace; }
+
+    /* Title bar */
+    .titlebar {
+      -webkit-app-region: drag;
+      height: 36px;
+      background: linear-gradient(180deg, #0c0c18, #08080f);
+      border-bottom: 1px solid #1a1a2e;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      flex-shrink: 0;
+    }
+    .titlebar-btn {
+      -webkit-app-region: no-drag;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      border: none;
+      cursor: pointer;
+      margin-left: 8px;
+      transition: filter 0.2s;
+    }
+    .titlebar-btn:hover { filter: brightness(1.4); }
+    .btn-close { background: #ef4444; }
+    .btn-max { background: #eab308; }
+    .btn-min { background: #22c55e; }
+
+    /* Animations */
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes slideDown { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    .animate-pulse { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+    .animate-spin { animation: spin 1s linear infinite; }
+
+    /* Layout */
+    .app-root { display: flex; flex-direction: column; height: calc(100vh - 36px); -webkit-app-region: no-drag; }
+    .app-body { display: flex; flex: 1; overflow: hidden; position: relative; }
+
+    /* Left nav sidebar — always absolutely positioned so hover doesn't shift layout */
+    .nav-sidebar {
+      width: 60px;
+      background: #08080f;
+      border-right: 1px solid #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 12px;
+      overflow: hidden;
+      z-index: 10;
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      transition: width 0.25s ease;
+    }
+    .nav-sidebar:hover {
+      width: 160px;
+      box-shadow: 4px 0 20px rgba(0,0,0,0.5);
+    }
+    .nav-item {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      cursor: pointer;
+      border: none;
+      background: none;
+      color: #444;
+      font-family: 'Inter', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      transition: all 0.2s;
+      white-space: nowrap;
+      border-left: 3px solid transparent;
+    }
+    .nav-item:hover { color: #888; background: #0a0a18; }
+    .nav-item.active { color: #a78bfa; border-left-color: #7c3aed; background: #0d0a1e; }
+    .nav-item .nav-icon { font-size: 20px; flex-shrink: 0; width: 24px; text-align: center; }
+    .nav-item .nav-label { opacity: 0; transition: opacity 0.2s; }
+    .nav-sidebar:hover .nav-item .nav-label { opacity: 1; }
+
+    /* Main content area */
+    .main-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; margin-left: 60px; }
+    .section-page { display: none; flex: 1; overflow: hidden; }
+    .section-page.active { display: flex; flex-direction: column; }
+
+    /* Shared components */
+    button { font-family: inherit; cursor: pointer; border: none; outline: none; background: none; color: inherit; -webkit-app-region: no-drag; }
+    input, textarea, select { -webkit-app-region: no-drag; }
+    .scan-btn {
+      padding: 8px 20px; border-radius: 8px; font-weight: 700; font-size: 13px;
+      letter-spacing: 0.05em; transition: all 0.3s; border: none;
+    }
+    .scan-btn:not(:disabled):hover { transform: translateY(-1px); filter: brightness(1.1); }
+    .opt-btn { font-size: 11px; padding: 2px 8px; border-radius: 4px; transition: all 0.2s; }
+    .opt-btn:hover { filter: brightness(1.3); }
+    .progress-bar { height: 4px; width: 100%; background: #1a1a2e; flex-shrink: 0; }
+    .progress-fill { height: 100%; transition: width 0.3s; background: linear-gradient(90deg, #7c3aed, #a78bfa); }
+    .stat-card { border-radius: 8px; padding: 12px; background: #0a0a14; border: 1px solid #12121e; }
+    .opt-card { border-radius: 8px; padding: 12px; margin-bottom: 8px; background: #0d0d1a; border: 1px solid #1a1a2e; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+    /* Server card */
+    .server-card {
+      width: 100%; text-align: left; border-radius: 8px; padding: 12px; margin-bottom: 8px;
+      transition: all 0.3s ease; position: relative; overflow: hidden; display: block;
+      cursor: pointer; border: 1px solid #12121e; background: #0a0a14; outline: none;
+      font-family: inherit; color: inherit;
+    }
+    .server-card:hover { transform: translateY(-1px); border-color: #222; }
+    .server-card.selected { background: #0f0a1e; border-color: #7c3aed; box-shadow: 0 0 20px rgba(124,58,237,0.1); }
+    .server-card.best { border-color: #14532d; }
+
+    /* Tunnel toggle */
+    .tunnel-toggle {
+      width: 52px; height: 28px; border-radius: 14px; border: none; cursor: pointer;
+      position: relative; transition: background 0.3s; padding: 0;
+    }
+    .tunnel-toggle::after {
+      content: ''; position: absolute; top: 3px; left: 3px;
+      width: 22px; height: 22px; border-radius: 50%; background: #fff;
+      transition: transform 0.3s;
+    }
+    .tunnel-toggle.on { background: #22c55e; }
+    .tunnel-toggle.on::after { transform: translateX(24px); }
+    .tunnel-toggle.off { background: #333; }
+    .tunnel-toggle.connecting { background: #eab308; }
+    .tunnel-toggle.connecting::after { animation: pulse 1s infinite; }
+
+    /* Config textarea */
+    .config-textarea {
+      width: 100%; min-height: 120px; border-radius: 6px; padding: 8px;
+      font-family: 'Fira Code', monospace; font-size: 10px;
+      background: #08080f; color: #666; border: 1px solid #1a1a2e;
+      resize: vertical; outline: none;
+    }
+    .config-textarea:focus { border-color: #7c3aed; }
+
+    /* Tab bar */
+    .tab-bar { display: flex; gap: 0; border-bottom: 1px solid #1a1a2e; flex-shrink: 0; }
+    .tab-btn {
+      flex: 1; padding: 8px 12px; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.05em; border: none; cursor: pointer;
+      transition: all 0.2s; border-bottom: 2px solid transparent;
+    }
+    .tab-btn.active { color: #a78bfa; border-bottom-color: #7c3aed; background: #0a0a14; }
+    .tab-btn:not(.active) { color: #444; background: #08080f; }
+    .tab-btn:not(.active):hover { color: #666; }
+
+    /* Latency bar */
+    .lat-bg { width: 96px; height: 8px; border-radius: 99px; overflow: hidden; background: #111; }
+    .lat-fill { height: 100%; border-radius: 99px; transition: width 0.5s; }
+
+    /* Net info bar */
+    .net-info { display: flex; align-items: center; gap: 12px; padding: 8px 24px; border-bottom: 1px solid #12121e; background: #08080f; flex-shrink: 0; }
+
+    /* Glitch */
+    @keyframes glitch {
+      0%,90%,100% { clip-path: inset(0); transform: translate(0); }
+      92% { clip-path: inset(40% 0 30% 0); transform: translate(-3px,-1px); }
+      94% { clip-path: inset(20% 0 50% 0); transform: translate(3px,1px); }
+      96% { clip-path: inset(60% 0 10% 0); transform: translate(-2px,2px); }
+      98% { clip-path: inset(10% 0 70% 0); transform: translate(2px,-1px); }
+    }
+    .glitch-text { position: relative; }
+    .glitch-text::after {
+      content: attr(data-text);
+      position: absolute; left: 0; top: 0;
+      color: #a78bfa; opacity: 0.5;
+      animation: glitch 5s infinite;
+    }
+
+    /* Network section layout */
+    .net-main { display: flex; flex: 1; overflow: hidden; }
+    .net-sidebar { width: 380px; border-right: 1px solid #1a1a2e; background: #08080f; padding: 16px; overflow-y: auto; flex-shrink: 0; }
+    .net-center { flex: 1; overflow-y: auto; padding: 24px; background: #06060e; }
+    .net-right { width: 320px; border-left: 1px solid #1a1a2e; background: #08080f; display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
+
+    /* Debloat / Tweaks / OC / BIOS section */
+    .full-section { flex: 1; overflow-y: auto; padding: 24px; }
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 24px; border-bottom: 1px solid #1a1a2e; background: linear-gradient(180deg, #0a0a18, #06060e); flex-shrink: 0;
+    }
+
+    /* Action button styles */
+    .action-btn {
+      padding: 6px 16px; border-radius: 6px; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.05em; transition: all 0.2s; border: none; cursor: pointer;
+    }
+    .action-btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
+    .action-btn.purple { background: linear-gradient(135deg, #7c3aed, #6d28d9); color: #fff; }
+    .action-btn.green { background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; }
+    .action-btn.red { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; }
+    .action-btn.orange { background: linear-gradient(135deg, #f97316, #ea580c); color: #fff; }
+    .action-btn.ghost { background: #1a0a2e; color: #a78bfa; border: 1px solid #2e1065; }
+    .action-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; filter: none; }
+
+    /* Status badges */
+    .badge {
+      font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 600;
+      letter-spacing: 0.05em; display: inline-block;
+    }
+    .badge-applied { background: #052e16; color: #22c55e; border: 1px solid #14532d; }
+    .badge-removed { background: #052e16; color: #22c55e; border: 1px solid #14532d; }
+    .badge-disabled { background: #052e16; color: #22c55e; border: 1px solid #14532d; }
+    .badge-failed { background: #1a0505; color: #ef4444; border: 1px solid #331111; }
+    .badge-admin { background: #1a0505; color: #ef4444; border: 1px solid #331111; }
+    .badge-pending { background: #1a1a2e; color: #666; border: 1px solid #222; }
+    .badge-applying { background: #1a1500; color: #eab308; border: 1px solid #422006; }
+
+    /* Item card */
+    .item-card {
+      border-radius: 8px; padding: 14px; margin-bottom: 8px; background: #0d0d1a;
+      border: 1px solid #1a1a2e; transition: border-color 0.2s;
+    }
+    .item-card:hover { border-color: #2a2a3e; }
+    .item-card.done { border-color: #14532d; background: #080f0a; }
+    .item-card.danger { border-color: #ef4444; border-left: 3px solid #ef4444; }
+
+    /* Collapsible */
+    .collapse-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px; background: #0a0a14; border: 1px solid #12121e;
+      border-radius: 8px; cursor: pointer; margin-bottom: 4px; transition: all 0.2s;
+    }
+    .collapse-header:hover { border-color: #2a2a3e; }
+    .collapse-header.open { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: 0; }
+    .collapse-body {
+      background: #08080f; border: 1px solid #12121e; border-top: none;
+      border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
+      padding: 12px; margin-bottom: 8px;
+    }
+
+    /* HW monitor cards */
+    .hw-card {
+      border-radius: 10px; padding: 16px; background: linear-gradient(135deg, #0a0a14, #0d0d1a);
+      border: 1px solid #1a1a2e;
+    }
+    .monitor-value {
+      font-family: 'Fira Code', monospace; font-size: 24px; font-weight: 700;
+    }
+    .monitor-bar {
+      height: 6px; border-radius: 3px; background: #1a1a2e; overflow: hidden; margin-top: 4px;
+    }
+    .monitor-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s, background 0.5s; }
+
+    /* Preset buttons */
+    .preset-btn {
+      padding: 10px 16px; border-radius: 8px; font-size: 12px; font-weight: 600;
+      background: #0a0a14; border: 1px solid #1a1a2e; color: #888;
+      transition: all 0.2s; cursor: pointer; text-align: center;
+    }
+    .preset-btn:hover { border-color: #7c3aed; color: #a78bfa; }
+    .preset-btn.active-preset { background: #1a0a2e; border-color: #7c3aed; color: #a78bfa; }
+    .preset-btn.preset-aggressive { border-color: #ef4444; }
+    .preset-btn.preset-aggressive:hover { color: #ef4444; }
+
+    /* BIOS guide card */
+    .bios-guide-item {
+      border-radius: 8px; padding: 14px; margin-bottom: 8px; background: #0d0d1a;
+      border: 1px solid #1a1a2e;
+    }
+    .impact-high { color: #ef4444; }
+    .impact-medium { color: #eab308; }
+    .impact-low { color: #22c55e; }
+
+    /* Confirm overlay */
+    .confirm-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center;
+      z-index: 999;
+    }
+    .confirm-box {
+      background: #0d0d1a; border: 1px solid #1a1a2e; border-radius: 12px;
+      padding: 32px; max-width: 400px; text-align: center;
+    }
+
+    /* Sub-tab bar for debloat */
+    .sub-tab-bar { display: flex; gap: 4px; padding: 0 24px; flex-shrink: 0; }
+    .sub-tab {
+      padding: 8px 16px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em;
+      border: none; cursor: pointer; transition: all 0.2s; border-radius: 6px 6px 0 0;
+      border-bottom: 2px solid transparent;
+    }
+    .sub-tab.active { color: #a78bfa; background: #0a0a14; border-bottom-color: #7c3aed; }
+    .sub-tab:not(.active) { color: #444; background: transparent; }
+    .sub-tab:not(.active):hover { color: #666; }
+
+    /* Stress test progress */
+    .stress-bar {
+      height: 8px; border-radius: 4px; background: #1a1a2e; overflow: hidden;
+    }
+    .stress-fill {
+      height: 100%; border-radius: 4px; transition: width 0.3s;
+      background: linear-gradient(90deg, #f97316, #ef4444);
+    }
+
+    /* Filter chips */
+    .filter-chip {
+      padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600;
+      border: 1px solid #1a1a2e; background: #0a0a14; color: #666;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .filter-chip.active { background: #1a0a2e; border-color: #7c3aed; color: #a78bfa; }
+    .filter-chip:hover { border-color: #333; }
+  </style>
+</head>
+<body>
+  <!-- Custom title bar -->
+  <div class="titlebar">
+    <span class="mono" style="font-size:11px;color:#333;">fortnite-pc-optimizer</span>
+    <div style="display:flex;align-items:center;">
+      <button class="titlebar-btn btn-min" onclick="window.api.windowMinimize()"></button>
+      <button class="titlebar-btn btn-max" onclick="window.api.windowMaximize()"></button>
+      <button class="titlebar-btn btn-close" onclick="window.api.windowClose()"></button>
+    </div>
+  </div>
+
+  <div id="app" class="app-root"></div>
+
+  <script>
+    // ── Server metadata ─────────────────────────────────────────────
+    const SERVERS = [
+      { id:"nae", name:"NA-East", city:"Virginia", flag:"\u{1F1FA}\u{1F1F8}" },
+      { id:"naw", name:"NA-West", city:"Oregon", flag:"\u{1F1FA}\u{1F1F8}" },
+      { id:"nac", name:"NA-Central", city:"Ohio", flag:"\u{1F1FA}\u{1F1F8}" },
+      { id:"dal", name:"NA-South", city:"Dallas", flag:"\u{1F1FA}\u{1F1F8}" },
+      { id:"eu1", name:"EU-West", city:"London", flag:"\u{1F1EC}\u{1F1E7}" },
+      { id:"eu2", name:"EU-Central", city:"Frankfurt", flag:"\u{1F1E9}\u{1F1EA}" },
+      { id:"oce", name:"Oceania", city:"Sydney", flag:"\u{1F1E6}\u{1F1FA}" },
+      { id:"br",  name:"Brazil", city:"S\u00e3o Paulo", flag:"\u{1F1E7}\u{1F1F7}" },
+      { id:"asia",name:"Asia", city:"Tokyo", flag:"\u{1F1EF}\u{1F1F5}" },
+      { id:"me",  name:"Middle East", city:"Bahrain", flag:"\u{1F1E7}\u{1F1ED}" },
+      { id:"ind", name:"India", city:"Mumbai", flag:"\u{1F1EE}\u{1F1F3}" },
+    ];
+
+    const OPTIMIZATIONS = [
+      { id:"dns", title:"DNS Flush & Optimize", desc:"Purge stale DNS cache, switch to Cloudflare 1.1.1.1 for faster resolution.", cmd:'ipconfig /flushdns && netsh interface ip set dns "Ethernet" static 1.1.1.1' },
+      { id:"nagle", title:"Disable Nagle's Algorithm", desc:"Kill TCP packet batching \u2014 send every game packet immediately.", cmd:'reg add HKLM\\...\\Interfaces\\{id} /v TcpAckFrequency /t REG_DWORD /d 1 /f' },
+      { id:"throttle", title:"Disable Network Throttling", desc:"Remove Windows default network throttle cap.", cmd:'reg add HKLM\\SOFTWARE\\Microsoft\\Windows NT\\...\\Multimedia /v NetworkThrottlingIndex /t REG_DWORD /d 0xFFFFFFFF /f' },
+      { id:"qos", title:"QoS Priority Boost", desc:"Set Fortnite traffic to highest priority class.", cmd:'reg add HKLM\\SOFTWARE\\Policies\\...\\Psched /v NonBestEffortLimit /t REG_DWORD /d 0 /f' },
+      { id:"mtu", title:"Optimize MTU Size", desc:"Eliminate packet fragmentation on your route.", cmd:'netsh interface ipv4 set subinterface "Ethernet" mtu=1472 store=persistent' },
+      { id:"tcp", title:"TCP Auto-Tuning", desc:"Set receive window to experimental for max throughput.", cmd:'netsh int tcp set global autotuninglevel=experimental' },
+      { id:"rss", title:"Receive-Side Scaling", desc:"Spread network load across all CPU cores.", cmd:'netsh int tcp set global rss=enabled' },
+      { id:"ecn", title:"ECN Capability", desc:"Let routers signal congestion before dropping packets.", cmd:'netsh int tcp set global ecncapability=enabled' },
+    ];
+
+    // ── State ───────────────────────────────────────────────────────
+    let state = {
+      activeSection: "network", // network | debloat | tweaks | overclock | bios
+      // Network
+      phase: "idle",
+      results: {},
+      pingHistory: {},
+      selected: null,
+      best: null,
+      hops: [],
+      opts: {},
+      scanCount: 0,
+      scanProgress: 0,
+      networkInfo: [],
+      tracingRoute: false,
+      rightTab: "opts",
+      tunnelStatus: "disconnected",
+      tunnelInstalled: false,
+      tunnelHasConfig: false,
+      tunnelStats: { tx: 0, rx: 0, endpoint: null },
+      tunnelConfig: "",
+      tunnelError: "",
+      benchPhase: "idle",
+      benchServer: null,
+      benchBaseline: null,
+      benchTunnel: null,
+      benchProgress: 0,
+      benchHistory: [],
+      // Updater
+      update: {
+        status: "idle",
+        currentVersion: null,
+        newVersion: null,
+        releaseNotes: "",
+        downloadProgress: 0,
+        error: null,
+      },
+      // Debloat
+      debloatTab: "apps",
+      debloatApps: [],
+      debloatServices: [],
+      debloatTelemetry: [],
+      debloatPerf: [],
+      debloatScanning: false,
+      debloatNuking: false,
+      debloatConfirm: null,
+      // Tweaks
+      tweakCategories: [],
+      tweaksApplied: {},
+      tweakApplying: {},
+      tweakCollapsed: {},
+      // Overclock
+      hwInfo: null,
+      hwStatsData: null,
+      hwGpuPresets: [],
+      hwCpuPresets: [],
+      hwRamTweaks: [],
+      hwActiveGpu: null,
+      hwActiveCpu: null,
+      hwStressing: false,
+      hwStressProgress: 0,
+      hwStressDuration: 10,
+      hwPolling: false,
+      // BIOS
+      biosInfoData: null,
+      biosHiddenData: [],
+      biosGuideData: [],
+      biosCpuFilter: "all",
+      biosConfirm: null,
+    };
+
+    let hwPollInterval = null;
+
+    // ── Helpers ──────────────────────────────────────────────────────
+    function pingColor(p) { return p<0?"#555":p<=20?"#22c55e":p<=40?"#84cc16":p<=60?"#eab308":p<=100?"#f97316":p<=150?"#ef4444":"#dc2626"; }
+    function pingLabel(p) { return p<0?"TIMEOUT":p<=20?"GODLIKE":p<=40?"EXCELLENT":p<=60?"GOOD":p<=100?"PLAYABLE":p<=150?"ROUGH":"UNPLAYABLE"; }
+    function pingEmoji(p) { return p<0?"\u274C":p<=20?"\u26A1":p<=40?"\u{1F525}":p<=60?"\u2705":p<=100?"\u26A0\uFE0F":"\u{1F480}"; }
+
+    function sparklineSVG(data, w, h, color) {
+      if (data.length < 2) return "";
+      const mn = Math.min(...data), mx = Math.max(...data), rng = mx-mn||1, step = w/(data.length-1);
+      const pts = data.map((v,i) => `${i*step},${h-((v-mn)/rng)*(h-4)-2}`).join(" ");
+      const fill = `0,${h} ${pts} ${w},${h}`;
+      const gid = `sg${color.replace("#","")}_${w}_${Math.random().toString(36).slice(2,6)}`;
+      return `<svg width="${w}" height="${h}" style="display:inline-block">
+        <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${color}" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+        </linearGradient></defs>
+        <polygon points="${fill}" fill="url(#${gid})"/>
+        <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>`;
+    }
+
+    function gaugeHTML(ping, size=140) {
+      const r=(size-16)/2, c=2*Math.PI*r, ratio=Math.min(Math.max(ping,0)/250,1), off=c-ratio*c, col=pingColor(ping);
+      return `<div style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px">
+        <svg width="${size}" height="${size}" style="transform:rotate(-90deg)">
+          <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="#1a1a2e" stroke-width="8"/>
+          <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${col}" stroke-width="8"
+            stroke-dasharray="${c}" stroke-dashoffset="${off}" stroke-linecap="round"
+            style="transition:stroke-dashoffset 0.8s ease,stroke 0.5s ease"/>
+        </svg>
+        <div style="position:absolute;display:flex;flex-direction:column;align-items:center">
+          <span class="mono" style="font-size:30px;font-weight:700;color:${col}">${ping < 0 ? "---" : ping}</span>
+          <span class="mono" style="font-size:11px;color:#555">ms</span>
+        </div>
+      </div>`;
+    }
+
+    function tempColor(t) { return t < 50 ? "#22c55e" : t < 70 ? "#eab308" : t < 85 ? "#f97316" : "#ef4444"; }
+    function usageColor(u) { return u < 50 ? "#22c55e" : u < 75 ? "#eab308" : u < 90 ? "#f97316" : "#ef4444"; }
+    function escHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+    // ── Navigation ──────────────────────────────────────────────────
+    function switchSection(section) {
+      state.activeSection = section;
+      if (section === "overclock") startHwPolling();
+      else stopHwPolling();
+      render();
+    }
+
+    // ── Network: Scan ───────────────────────────────────────────────
+    async function runScan() {
+      state.phase = "scanning";
+      state.results = {};
+      state.selected = null;
+      state.hops = [];
+      state.scanProgress = 0;
+      render();
+
+      for (let i = 0; i < SERVERS.length; i++) {
+        const srv = SERVERS[i];
+        try {
+          const res = await window.api.pingServer(srv.id);
+          state.results[srv.id] = res;
+          if (!state.pingHistory[srv.id]) state.pingHistory[srv.id] = [];
+          if (res.ping > 0) state.pingHistory[srv.id].push(res.ping);
+          if (state.pingHistory[srv.id].length > 20) state.pingHistory[srv.id] = state.pingHistory[srv.id].slice(-20);
+        } catch (e) {
+          state.results[srv.id] = { ping: -1, jitter: 0, loss: 100, ip: "error" };
+        }
+        state.scanProgress = ((i + 1) / SERVERS.length) * 100;
+        render();
+      }
+
+      let best = null, bestPing = Infinity;
+      for (const [id, data] of Object.entries(state.results)) {
+        if (data.ping > 0 && data.ping < bestPing) { bestPing = data.ping; best = id; }
+      }
+      state.best = best;
+      state.phase = "done";
+      state.scanCount++;
+
+      if (best) {
+        state.selected = best;
+        await loadTraceroute(best);
+      }
+      render();
+    }
+
+    async function loadTraceroute(serverId) {
+      state.tracingRoute = true;
+      render();
+      try {
+        state.hops = await window.api.traceroute(serverId);
+      } catch (e) {
+        state.hops = [];
+      }
+      state.tracingRoute = false;
+      render();
+    }
+
+    async function selectServer(serverId) {
+      state.selected = serverId;
+      render();
+      await loadTraceroute(serverId);
+    }
+
+    async function applyOpt(optId) {
+      state.opts[optId] = "applying";
+      render();
+      try {
+        const res = await window.api.applyOptimization(optId);
+        state.opts[optId] = res.success ? "applied" : "failed";
+      } catch (e) {
+        state.opts[optId] = "failed";
+      }
+      render();
+    }
+
+    async function applyAllOpts() {
+      for (const opt of OPTIMIZATIONS) {
+        if (state.opts[opt.id] !== "applied") await applyOpt(opt.id);
+      }
+    }
+
+    // ── Network: Tunnel ─────────────────────────────────────────────
+    function switchTab(tab) { state.rightTab = tab; render(); }
+
+    async function refreshTunnelStatus() {
+      try {
+        const s = await window.api.tunnelStatus();
+        state.tunnelStatus = s.status;
+        state.tunnelInstalled = s.installed;
+        state.tunnelHasConfig = s.hasConfig;
+        state.tunnelStats = s.stats;
+      } catch(e) {}
+    }
+
+    async function saveTunnelConfig() {
+      const textarea = document.getElementById("tunnel-config-input");
+      if (!textarea) return;
+      const config = textarea.value.trim();
+      if (!config) { state.tunnelError = "Paste your WireGuard config first"; render(); return; }
+      const res = await window.api.tunnelSaveConfig(config);
+      if (res.success) {
+        state.tunnelHasConfig = true;
+        state.tunnelConfig = config;
+        state.tunnelError = "";
+      } else {
+        state.tunnelError = res.error;
+      }
+      render();
+    }
+
+    async function toggleTunnel() {
+      state.tunnelStatus = "connecting";
+      state.tunnelError = "";
+      render();
+      try {
+        const res = await window.api.tunnelToggle();
+        if (!res.success) {
+          state.tunnelError = res.error;
+          state.tunnelStatus = "error";
+        } else {
+          await refreshTunnelStatus();
+        }
+      } catch(e) {
+        state.tunnelError = e.message;
+        state.tunnelStatus = "error";
+      }
+      render();
+    }
+
+    async function loadTunnelConfig() {
+      const res = await window.api.tunnelLoadConfig();
+      if (res.success) { state.tunnelConfig = res.config; state.tunnelHasConfig = true; }
+    }
+
+    setInterval(async () => {
+      if (state.tunnelStatus === "connected") {
+        const stats = await window.api.tunnelStats();
+        state.tunnelStats = stats;
+        const el = document.getElementById("tunnel-stats-display");
+        if (el) {
+          const tx = (stats.tx / 1024 / 1024).toFixed(1);
+          const rx = (stats.rx / 1024 / 1024).toFixed(1);
+          el.innerHTML = `TX: ${tx} MB &nbsp;\u2022&nbsp; RX: ${rx} MB`;
+        }
+      }
+    }, 3000);
+
+    // ── Network: Benchmark ──────────────────────────────────────────
+    async function runBenchmark() {
+      const serverId = state.benchServer || state.best || state.selected || "nae";
+      state.benchPhase = "running-baseline";
+      state.benchBaseline = null;
+      state.benchTunnel = null;
+      state.benchProgress = 0;
+      render();
+
+      try {
+        state.benchBaseline = await window.api.benchmarkRun(serverId);
+        state.benchProgress = 50;
+      } catch(e) {
+        state.benchBaseline = { ping: -1, jitter: 0, loss: 100, error: e.message };
+        state.benchProgress = 50;
+      }
+      render();
+
+      if (state.tunnelStatus === "connected") {
+        state.benchPhase = "running-tunnel";
+        render();
+        try {
+          state.benchTunnel = await window.api.benchmarkRun(serverId);
+          state.benchProgress = 100;
+        } catch(e) {
+          state.benchTunnel = { ping: -1, jitter: 0, loss: 100, error: e.message };
+          state.benchProgress = 100;
+        }
+      } else {
+        state.benchProgress = 100;
+        state.benchTunnel = null;
+      }
+
+      state.benchHistory.push({
+        server: serverId,
+        serverName: SERVERS.find(s => s.id === serverId)?.name || serverId,
+        baseline: state.benchBaseline,
+        tunnel: state.benchTunnel,
+        timestamp: Date.now(),
+        tunnelWasOn: state.tunnelStatus === "connected",
+      });
+      if (state.benchHistory.length > 10) state.benchHistory = state.benchHistory.slice(-10);
+
+      state.benchPhase = "done";
+      render();
+    }
+
+    function setBenchServer(id) { state.benchServer = id; render(); }
+
+    // ── Updater ─────────────────────────────────────────────────────
+    async function checkForUpdates() { await window.api.updaterCheck(); }
+    async function downloadUpdate() { await window.api.updaterDownload(); }
+    function installUpdate() { window.api.updaterInstall(); }
+    function dismissUpdate() { window.api.updaterDismiss(); }
+
+    if (window.api.onUpdateStatus) {
+      window.api.onUpdateStatus((data) => {
+        state.update = data;
+        render();
+      });
+    }
+
+    // ── Debloat ─────────────────────────────────────────────────────
+    function switchDebloatTab(tab) { state.debloatTab = tab; render(); }
+
+    async function loadDebloatData() {
+      state.debloatScanning = true;
+      render();
+      try {
+        const lists = await window.api.debloatGetLists();
+        state.debloatApps = lists.apps || [];
+        state.debloatServices = lists.services || [];
+        state.debloatTelemetry = lists.telemetry || [];
+        state.debloatPerf = lists.performance || [];
+      } catch(e) {
+        console.error("Failed to load debloat lists:", e);
+      }
+      state.debloatScanning = false;
+      render();
+    }
+
+    async function scanDebloatApps() {
+      state.debloatScanning = true;
+      render();
+      try {
+        const apps = await window.api.debloatScanApps();
+        state.debloatApps = apps || [];
+      } catch(e) {}
+      state.debloatScanning = false;
+      render();
+    }
+
+    async function scanDebloatServices() {
+      state.debloatScanning = true;
+      render();
+      try {
+        const svcs = await window.api.debloatScanServices();
+        state.debloatServices = svcs || [];
+      } catch(e) {}
+      state.debloatScanning = false;
+      render();
+    }
+
+    async function debloatRemoveApp(id) {
+      const app = state.debloatApps.find(a => a.id === id);
+      if (app) app.status = "removing";
+      render();
+      try {
+        const res = await window.api.debloatRemoveApp(id);
+        if (app) app.status = res.success ? "removed" : (res.needAdmin ? "needadmin" : "failed");
+      } catch(e) {
+        if (app) app.status = "failed";
+      }
+      render();
+    }
+
+    async function debloatRemoveAllApps() {
+      for (const app of state.debloatApps) {
+        if (app.status !== "removed") {
+          app.status = "removing";
+          render();
+          try {
+            const res = await window.api.debloatRemoveApp(app.id);
+            app.status = res.success ? "removed" : (res.needAdmin ? "needadmin" : "failed");
+          } catch(e) {
+            app.status = "failed";
+          }
+          render();
+        }
+      }
+    }
+
+    async function debloatDisableService(id) {
+      const svc = state.debloatServices.find(s => s.id === id);
+      if (svc) svc.status = "disabling";
+      render();
+      try {
+        const res = await window.api.debloatDisableService(id);
+        if (svc) svc.status = res.success ? "disabled" : (res.needAdmin ? "needadmin" : "failed");
+      } catch(e) {
+        if (svc) svc.status = "failed";
+      }
+      render();
+    }
+
+    async function debloatDisableAllServices() {
+      for (const svc of state.debloatServices) {
+        if (svc.status !== "disabled") {
+          svc.status = "disabling";
+          render();
+          try {
+            const res = await window.api.debloatDisableService(svc.id);
+            svc.status = res.success ? "disabled" : (res.needAdmin ? "needadmin" : "failed");
+          } catch(e) {
+            svc.status = "failed";
+          }
+          render();
+        }
+      }
+    }
+
+    async function debloatApplyTelemetry(id) {
+      const item = state.debloatTelemetry.find(t => t.id === id);
+      if (item) item.status = "applying";
+      render();
+      try {
+        const res = await window.api.debloatApplyTelemetry(id);
+        if (item) item.status = res.success ? "applied" : (res.needAdmin ? "needadmin" : "failed");
+      } catch(e) {
+        if (item) item.status = "failed";
+      }
+      render();
+    }
+
+    async function debloatApplyAllTelemetry() {
+      for (const item of state.debloatTelemetry) {
+        if (item.status !== "applied") {
+          item.status = "applying";
+          render();
+          try {
+            const res = await window.api.debloatApplyTelemetry(item.id);
+            item.status = res.success ? "applied" : (res.needAdmin ? "needadmin" : "failed");
+          } catch(e) {
+            item.status = "failed";
+          }
+          render();
+        }
+      }
+    }
+
+    async function debloatApplyPerf(id) {
+      const item = state.debloatPerf.find(p => p.id === id);
+      if (item) item.status = "applying";
+      render();
+      try {
+        const res = await window.api.debloatApplyPerf(id);
+        if (item) item.status = res.success ? "applied" : (res.needAdmin ? "needadmin" : "failed");
+      } catch(e) {
+        if (item) item.status = "failed";
+      }
+      render();
+    }
+
+    async function debloatApplyAllPerf() {
+      for (const item of state.debloatPerf) {
+        if (item.status !== "applied") {
+          item.status = "applying";
+          render();
+          try {
+            const res = await window.api.debloatApplyPerf(item.id);
+            item.status = res.success ? "applied" : (res.needAdmin ? "needadmin" : "failed");
+          } catch(e) {
+            item.status = "failed";
+          }
+          render();
+        }
+      }
+    }
+
+    function showNukeConfirm() { state.debloatConfirm = "nuke"; render(); }
+    function cancelConfirm() { state.debloatConfirm = null; state.biosConfirm = null; render(); }
+
+    async function debloatFullNuke() {
+      state.debloatConfirm = null;
+      state.debloatNuking = true;
+      render();
+      try {
+        await window.api.debloatFullNuke();
+        await loadDebloatData();
+      } catch(e) {}
+      state.debloatNuking = false;
+      render();
+    }
+
+    // ── Tweaks ──────────────────────────────────────────────────────
+    async function loadTweaks() {
+      try {
+        const cats = await window.api.tweaksGetCategories();
+        // cats may be an object {gpu:{...}, input:{...}, ...} — convert to array
+        if (cats && !Array.isArray(cats)) {
+          state.tweakCategories = Object.entries(cats).map(([id, cat]) => ({ id, ...cat }));
+        } else {
+          state.tweakCategories = cats || [];
+        }
+        const applied = await window.api.tweaksGetApplied();
+        state.tweaksApplied = {};
+        if (Array.isArray(applied)) {
+          applied.forEach(id => { state.tweaksApplied[id] = true; });
+        } else if (applied && typeof applied === "object") {
+          state.tweaksApplied = applied;
+        }
+      } catch(e) {
+        console.error("Failed to load tweaks:", e);
+      }
+      render();
+    }
+
+    function toggleTweakCategory(catId) {
+      state.tweakCollapsed[catId] = !state.tweakCollapsed[catId];
+      render();
+    }
+
+    async function applyTweak(tweakId) {
+      state.tweakApplying[tweakId] = true;
+      render();
+      try {
+        const res = await window.api.tweaksApply(tweakId);
+        if (res.success) state.tweaksApplied[tweakId] = true;
+        else state.tweakApplying[tweakId] = "failed";
+      } catch(e) {
+        state.tweakApplying[tweakId] = "failed";
+      }
+      delete state.tweakApplying[tweakId];
+      render();
+    }
+
+    async function applyTweakCategory(catId) {
+      const cat = state.tweakCategories.find(c => c.id === catId);
+      if (!cat) return;
+      for (const tweak of cat.tweaks) {
+        if (!state.tweaksApplied[tweak.id]) {
+          state.tweakApplying[tweak.id] = true;
+          render();
+          try {
+            const res = await window.api.tweaksApply(tweak.id);
+            if (res.success) state.tweaksApplied[tweak.id] = true;
+          } catch(e) {}
+          delete state.tweakApplying[tweak.id];
+        }
+      }
+      render();
+    }
+
+    async function applyAllSafeTweaks() {
+      for (const cat of state.tweakCategories) {
+        for (const tweak of cat.tweaks) {
+          if (!state.tweaksApplied[tweak.id] && !tweak.danger) {
+            state.tweakApplying[tweak.id] = true;
+            render();
+            try {
+              const res = await window.api.tweaksApply(tweak.id);
+              if (res.success) state.tweaksApplied[tweak.id] = true;
+            } catch(e) {}
+            delete state.tweakApplying[tweak.id];
+          }
+        }
+      }
+      render();
+    }
+
+    async function applyAllTweaks() {
+      try {
+        await window.api.tweaksApplyAll();
+        await loadTweaks();
+      } catch(e) {}
+    }
+
+    // ── Overclock ───────────────────────────────────────────────────
+    async function loadHwData() {
+      try {
+        const [info, gpuP, cpuP, ramT] = await Promise.all([
+          window.api.hwDetect(),
+          window.api.hwGpuPresets(),
+          window.api.hwCpuPresets(),
+          window.api.hwRamTweaks(),
+        ]);
+        state.hwInfo = info;
+        state.hwGpuPresets = gpuP || [];
+        state.hwCpuPresets = cpuP || [];
+        state.hwRamTweaks = ramT || [];
+      } catch(e) {
+        console.error("Failed to load HW data:", e);
+      }
+      render();
+    }
+
+    function startHwPolling() {
+      if (hwPollInterval) return;
+      state.hwPolling = true;
+      pollHwStats();
+      hwPollInterval = setInterval(pollHwStats, 2000);
+    }
+
+    function stopHwPolling() {
+      state.hwPolling = false;
+      if (hwPollInterval) { clearInterval(hwPollInterval); hwPollInterval = null; }
+    }
+
+    async function pollHwStats() {
+      try {
+        state.hwStatsData = await window.api.hwStats();
+        // Only re-render the monitoring section if on overclock page
+        if (state.activeSection === "overclock") {
+          const el = document.getElementById("hw-monitor-area");
+          if (el) el.innerHTML = renderHwMonitor();
+        }
+      } catch(e) {}
+    }
+
+    async function applyGpuPreset(id) {
+      state.hwActiveGpu = id;
+      render();
+      try {
+        await window.api.hwGpuApplyPreset(id);
+      } catch(e) {
+        console.error(e);
+      }
+      render();
+    }
+
+    async function resetGpu() {
+      state.hwActiveGpu = null;
+      render();
+      try {
+        await window.api.hwGpuReset();
+      } catch(e) {}
+      render();
+    }
+
+    async function applyCpuPreset(id) {
+      state.hwActiveCpu = id;
+      render();
+      try {
+        await window.api.hwCpuApplyPreset(id);
+      } catch(e) {}
+      render();
+    }
+
+    async function applyRamTweak(id) {
+      const item = state.hwRamTweaks.find(r => r.id === id);
+      if (item) item.status = "applying";
+      render();
+      try {
+        const res = await window.api.hwRamApply(id);
+        if (item) item.status = res.success ? "applied" : "failed";
+      } catch(e) {
+        if (item) item.status = "failed";
+      }
+      render();
+    }
+
+    async function runStressTest() {
+      state.hwStressing = true;
+      state.hwStressProgress = 0;
+      render();
+      const dur = state.hwStressDuration;
+      const interval = setInterval(() => {
+        state.hwStressProgress = Math.min(100, state.hwStressProgress + (100 / (dur * 4)));
+        const el = document.getElementById("stress-progress");
+        if (el) el.style.width = state.hwStressProgress + "%";
+      }, 250);
+      try {
+        await window.api.hwStressTest(dur);
+      } catch(e) {}
+      clearInterval(interval);
+      state.hwStressing = false;
+      state.hwStressProgress = 100;
+      render();
+    }
+
+    // ── BIOS ────────────────────────────────────────────────────────
+    async function loadBiosData() {
+      try {
+        const [info, hidden, guide] = await Promise.all([
+          window.api.biosInfo(),
+          window.api.biosHidden(),
+          window.api.biosGuide(),
+        ]);
+        state.biosInfoData = info;
+        state.biosHiddenData = hidden?.settings || hidden || [];
+        state.biosGuideData = guide || [];
+      } catch(e) {
+        console.error("Failed to load BIOS data:", e);
+      }
+      render();
+    }
+
+    function setBiosCpuFilter(f) { state.biosCpuFilter = f; render(); }
+
+    function showBiosRebootConfirm() { state.biosConfirm = "reboot"; render(); }
+
+    async function doBiosReboot() {
+      state.biosConfirm = null;
+      render();
+      try {
+        await window.api.biosReboot();
+      } catch(e) {
+        console.error(e);
+      }
+    }
+
+    async function applyBcdSetting(setting, value) {
+      try {
+        await window.api.biosApplyBcd(setting, value);
+      } catch(e) {}
+      render();
+    }
+
+    async function disableHyperV() {
+      try {
+        await window.api.biosDisableHyperV();
+      } catch(e) {}
+      render();
+    }
+
+    // ── Render Helpers ──────────────────────────────────────────────
+    function renderStatusBadge(status) {
+      switch(status) {
+        case "removed": return '<span class="badge badge-removed">REMOVED</span>';
+        case "disabled": return '<span class="badge badge-disabled">DISABLED</span>';
+        case "applied": return '<span class="badge badge-applied">APPLIED</span>';
+        case "failed": return '<span class="badge badge-failed">FAILED</span>';
+        case "needadmin": return '<span class="badge badge-admin">NEED ADMIN</span>';
+        case "removing": case "disabling": case "applying":
+          return '<span class="badge badge-applying animate-pulse">WORKING...</span>';
+        default: return '';
+      }
+    }
+
+    function renderHwMonitor() {
+      const d = state.hwStatsData;
+      if (!d) return '<div style="text-align:center;padding:24px;color:#333" class="mono">// waiting for hardware data...</div>';
+
+      const cpu = d.cpu || {};
+      const gpu = d.gpu || {};
+      const ram = d.ram || {};
+
+      return `<div class="grid-3" style="gap:16px">
+        <div class="hw-card">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <span style="font-size:12px;font-weight:600;color:#888">CPU</span>
+            <span class="mono" style="font-size:10px;color:${tempColor(cpu.temp||0)}">${cpu.temp||0}\u00B0C</span>
+          </div>
+          <div class="monitor-value" style="color:${usageColor(cpu.usage||0)}">${cpu.usage||0}<span style="font-size:14px;color:#555">%</span></div>
+          <div class="monitor-bar"><div class="monitor-bar-fill" style="width:${cpu.usage||0}%;background:${usageColor(cpu.usage||0)}"></div></div>
+          <div class="mono" style="font-size:10px;color:#444;margin-top:8px">${cpu.clock||0} MHz</div>
+        </div>
+        <div class="hw-card">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <span style="font-size:12px;font-weight:600;color:#888">GPU</span>
+            <span class="mono" style="font-size:10px;color:${tempColor(gpu.temp||0)}">${gpu.temp||0}\u00B0C</span>
+          </div>
+          <div class="monitor-value" style="color:${usageColor(gpu.usage||0)}">${gpu.usage||0}<span style="font-size:14px;color:#555">%</span></div>
+          <div class="monitor-bar"><div class="monitor-bar-fill" style="width:${gpu.usage||0}%;background:${usageColor(gpu.usage||0)}"></div></div>
+          <div style="display:flex;justify-content:space-between;margin-top:8px">
+            <span class="mono" style="font-size:10px;color:#444">${gpu.clock||0} MHz</span>
+            <span class="mono" style="font-size:10px;color:#444">VRAM ${gpu.vramUsed||0}/${gpu.vramTotal||0} GB</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:4px">
+            <span class="mono" style="font-size:10px;color:#444">Fan ${gpu.fan||0}%</span>
+            <span class="mono" style="font-size:10px;color:#444">${gpu.power||0}W</span>
+          </div>
+        </div>
+        <div class="hw-card">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <span style="font-size:12px;font-weight:600;color:#888">RAM</span>
+            <span class="mono" style="font-size:10px;color:#555">${ram.used||0}/${ram.total||0} GB</span>
+          </div>
+          <div class="monitor-value" style="color:${usageColor(ram.usage||0)}">${ram.usage||0}<span style="font-size:14px;color:#555">%</span></div>
+          <div class="monitor-bar"><div class="monitor-bar-fill" style="width:${ram.usage||0}%;background:${usageColor(ram.usage||0)}"></div></div>
+        </div>
+      </div>`;
+    }
+
+    // ── Main Render ─────────────────────────────────────────────────
+    function render() {
+      const app = document.getElementById("app");
+      const s = state;
+      let html = "";
+
+      // Update notification bar
+      if (s.update.status === "available") {
+        html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 24px;background:linear-gradient(90deg,#1a0a2e,#0f0a1e);border-bottom:1px solid #2e1065;animation:slideDown 0.3s ease">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:14px">\u{1F680}</span>
+            <span class="mono" style="font-size:11px;color:#a78bfa">v${s.update.newVersion} available</span>
+            <span style="font-size:11px;color:#555">\u2014 new update ready to download</span>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button onclick="downloadUpdate()" class="action-btn purple" style="padding:4px 12px">DOWNLOAD</button>
+            <button onclick="dismissUpdate()" style="padding:4px 8px;border-radius:4px;font-size:11px;color:#444;background:#1a1a2e">\u2715</button>
+          </div>
+        </div>`;
+      } else if (s.update.status === "downloading") {
+        html += `<div style="display:flex;align-items:center;gap:12px;padding:8px 24px;background:#0a0a18;border-bottom:1px solid #1a1a2e;animation:slideDown 0.3s ease">
+          <span class="animate-spin" style="font-size:12px;display:inline-block">\u{1F504}</span>
+          <span class="mono" style="font-size:11px;color:#a78bfa">Downloading v${s.update.newVersion}...</span>
+          <div style="flex:1;height:4px;background:#1a1a2e;border-radius:2px;overflow:hidden">
+            <div style="height:100%;width:${s.update.downloadProgress}%;background:linear-gradient(90deg,#7c3aed,#a78bfa);border-radius:2px;transition:width 0.3s"></div>
+          </div>
+          <span class="mono" style="font-size:11px;color:#555">${s.update.downloadProgress}%</span>
+        </div>`;
+      } else if (s.update.status === "downloaded") {
+        html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 24px;background:linear-gradient(90deg,#021a0a,#0a1a0a);border-bottom:1px solid #14532d;animation:slideDown 0.3s ease">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:14px">\u2705</span>
+            <span class="mono" style="font-size:11px;color:#22c55e">v${s.update.newVersion} ready to install</span>
+            <span style="font-size:11px;color:#555">\u2014 restart to apply update</span>
+          </div>
+          <button onclick="installUpdate()" class="action-btn green" style="padding:4px 12px">RESTART & UPDATE</button>
+        </div>`;
+      }
+
+      // App body: nav + content
+      html += `<div class="app-body">`;
+
+      // Left nav sidebar
+      html += `<div class="nav-sidebar">
+        <button class="nav-item ${s.activeSection==='network'?'active':''}" onclick="switchSection('network')">
+          <span class="nav-icon">\u{1F3AF}</span><span class="nav-label">NETWORK</span>
+        </button>
+        <button class="nav-item ${s.activeSection==='debloat'?'active':''}" onclick="switchSection('debloat')">
+          <span class="nav-icon">\u{1F5D1}\uFE0F</span><span class="nav-label">DEBLOAT</span>
+        </button>
+        <button class="nav-item ${s.activeSection==='tweaks'?'active':''}" onclick="switchSection('tweaks')">
+          <span class="nav-icon">\u26A1</span><span class="nav-label">TWEAKS</span>
+        </button>
+        <button class="nav-item ${s.activeSection==='overclock'?'active':''}" onclick="switchSection('overclock')">
+          <span class="nav-icon">\u{1F525}</span><span class="nav-label">OVERCLOCK</span>
+        </button>
+        <button class="nav-item ${s.activeSection==='bios'?'active':''}" onclick="switchSection('bios')">
+          <span class="nav-icon">\u2699\uFE0F</span><span class="nav-label">BIOS</span>
+        </button>
+      </div>`;
+
+      // Main content area
+      html += `<div class="main-content">`;
+
+      // ════════════════════════════════════════════════════════
+      // NETWORK SECTION
+      // ════════════════════════════════════════════════════════
+      html += `<div class="section-page ${s.activeSection==='network'?'active':''}">`;
+
+      // Network info bar
+      if (s.networkInfo.length > 0) {
+        html += `<div class="net-info">
+          <span class="mono" style="font-size:10px;color:#333">// NIC:</span>
+          ${s.networkInfo.map(n => `<span class="mono" style="font-size:10px;color:#555">${n.name} [${n.address}]</span>`).join(" ")}
+        </div>`;
+      }
+
+      // Network header
+      html += `<div class="section-header">
+        <div style="display:flex;align-items:center;gap:16px">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="glitch-text" data-text="FORTNITE PC OPTIMIZER" style="font-weight:700;font-size:18px;letter-spacing:0.025em;color:#a78bfa">FORTNITE PC OPTIMIZER</span>
+              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.0</span>
+              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#0a1a0a;color:#22c55e;border:1px solid #14532d">REAL PINGS</span>
+            </div>
+            <div class="mono" style="font-size:11px;color:#333">// measuring actual TCP latency to AWS game servers</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px">
+          ${s.scanCount > 0 ? `<span class="mono" style="font-size:11px;color:#333">scans: ${s.scanCount}</span>` : ""}
+          <button class="scan-btn" onclick="runScan()" ${s.phase==="scanning"?"disabled":""} style="
+            background:${s.phase==="scanning"?"#1a1a2e":"linear-gradient(135deg,#7c3aed,#6d28d9)"};
+            color:${s.phase==="scanning"?"#555":"#fff"};
+            cursor:${s.phase==="scanning"?"not-allowed":"pointer"};
+            box-shadow:${s.phase!=="scanning"?"0 0 20px rgba(124,58,237,0.3)":"none"};
+          ">${s.phase==="scanning"?`<span class="animate-spin" style="display:inline-block;margin-right:6px">\u{1F504}</span>SCANNING...`:s.phase==="done"?"RE-SCAN":"START SCAN"}</button>
+        </div>
+      </div>`;
+
+      // Scan progress
+      if (s.phase === "scanning") {
+        html += `<div class="progress-bar"><div class="progress-fill" style="width:${s.scanProgress}%"></div></div>`;
+      }
+
+      // Network main area
+      const selData = s.selected ? s.results[s.selected] : null;
+      const selInfo = s.selected ? SERVERS.find(x => x.id === s.selected) : null;
+      const appliedCount = Object.values(s.opts).filter(v => v === "applied").length;
+
+      html += `<div class="net-main">`;
+
+      // ── Left: Servers ──
+      html += `<div class="net-sidebar">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <span class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em">// SERVER REGIONS</span>
+          ${s.best ? `<span class="mono" style="font-size:11px;color:#22c55e">BEST: ${SERVERS.find(x=>x.id===s.best)?.name}</span>` : ""}
+        </div>`;
+
+      for (const srv of SERVERS) {
+        const data = s.results[srv.id];
+        const isBest = srv.id === s.best;
+        const isSel = srv.id === s.selected;
+        const history = s.pingHistory[srv.id] || [];
+        const cls = `server-card${isSel?" selected":""}${isBest&&!isSel?" best":""}`;
+
+        html += `<button class="${cls}" onclick="selectServer('${srv.id}')">`;
+        if (isBest) html += `<div style="position:absolute;top:0;right:0;padding:2px 8px;background:#052e16;color:#22c55e;font-size:10px;border-bottom-left-radius:6px">LOWEST PING</div>`;
+
+        html += `<div style="display:flex;align-items:center;justify-content:space-between">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:18px">${srv.flag}</span>
+            <div>
+              <div style="font-weight:600;font-size:13px;color:${isSel?"#c4b5fd":"#888"}">${srv.name}</div>
+              <div style="font-size:11px;color:#444">${srv.city}${data?.ip ? " \u2022 "+data.ip : ""}</div>
+            </div>
+          </div>`;
+
+        if (data) {
+          html += `<div style="text-align:right">
+            <div style="display:flex;align-items:center;gap:4px;justify-content:flex-end">
+              <span style="font-size:11px">${pingEmoji(data.ping)}</span>
+              <span class="mono" style="font-size:18px;font-weight:700;color:${pingColor(data.ping)}">${data.ping < 0 ? "---" : data.ping}</span>
+              <span style="font-size:11px;color:#444">ms</span>
+            </div>
+            <div class="mono" style="font-size:11px;color:#333">\u00B1${data.jitter}ms${data.loss > 0 ? " \u2022 "+data.loss+"% loss" : ""}</div>
+          </div>`;
+        } else if (s.phase === "scanning") {
+          html += `<div class="animate-pulse" style="font-size:11px;color:#333">pinging...</div>`;
+        } else {
+          html += `<div style="font-size:11px;color:#222">\u2014</div>`;
+        }
+
+        html += `</div>`;
+
+        if (history.length > 1) {
+          html += `<div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            ${sparklineSVG(history, 190, 24, data ? pingColor(data.ping) : "#333")}
+            <span class="mono" style="font-size:11px;color:#333">${Math.min(...history)}-${Math.max(...history)}</span>
+          </div>`;
+        }
+
+        html += `</button>`;
+      }
+      html += `</div>`; // end net-sidebar
+
+      // ── Center: Details ──
+      html += `<div class="net-center">`;
+
+      if (s.phase === "idle") {
+        html += `<div style="display:flex;align-items:center;justify-content:center;height:100%">
+          <div style="text-align:center">
+            <div style="font-size:60px;margin-bottom:16px;opacity:0.2">\u{1F3AF}</div>
+            <div class="mono" style="font-size:13px;color:#333">// hit START SCAN to ping all fortnite servers</div>
+            <div class="mono" style="font-size:11px;color:#222;margin-top:8px">// real TCP pings to AWS game server endpoints</div>
+          </div>
+        </div>`;
+      } else if (s.selected && selData) {
+        // Gauge + stats
+        html += `<div style="display:flex;align-items:flex-start;gap:24px;margin-bottom:24px">
+          ${gaugeHTML(selData.ping, 140)}
+          <div style="flex:1;padding-top:8px">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
+              <span style="font-size:24px">${selInfo.flag}</span>
+              <span style="font-size:20px;font-weight:700;color:#e2e8f0">${selInfo.name}</span>
+              ${s.selected === s.best ? '<span style="font-size:11px;padding:2px 8px;border-radius:4px;background:#052e16;color:#22c55e;border:1px solid #14532d">RECOMMENDED</span>' : ""}
+            </div>
+            <div style="font-size:13px;color:#555;margin-bottom:12px">${selInfo.city} \u2022 ${selData.ip || ""}</div>
+            <div class="grid-3">
+              <div class="stat-card">
+                <div style="font-size:11px;color:#444;margin-bottom:4px">LATENCY</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:${pingColor(selData.ping)}">${selData.ping < 0 ? "TIMEOUT" : selData.ping+"ms"}</div>
+                <div style="font-size:11px;color:${pingColor(selData.ping)}">${pingLabel(selData.ping)}</div>
+              </div>
+              <div class="stat-card">
+                <div style="font-size:11px;color:#444;margin-bottom:4px">JITTER</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:${selData.jitter>15?"#f97316":"#22c55e"}">\u00B1${selData.jitter}ms</div>
+                <div style="font-size:11px;color:${selData.jitter>15?"#f97316":"#22c55e"}">${selData.jitter>15?"UNSTABLE":"STABLE"}</div>
+              </div>
+              <div class="stat-card">
+                <div style="font-size:11px;color:#444;margin-bottom:4px">PACKET LOSS</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:${selData.loss>0?"#ef4444":"#22c55e"}">${selData.loss}%</div>
+                <div style="font-size:11px;color:${selData.loss>0?"#ef4444":"#22c55e"}">${selData.loss>0?"DROPPING":"CLEAN"}</div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+
+        // Ping History
+        const hist = s.pingHistory[s.selected];
+        if (hist && hist.length > 1) {
+          html += `<div style="border-radius:8px;padding:16px;margin-bottom:16px;background:#0a0a14;border:1px solid #12121e">
+            <div class="mono" style="font-size:11px;color:#444;margin-bottom:8px;letter-spacing:0.1em">// PING HISTORY</div>
+            ${sparklineSVG(hist, 560, 60, pingColor(selData.ping))}
+            <div style="display:flex;justify-content:space-between;margin-top:4px">
+              <span class="mono" style="font-size:11px;color:#333">min: ${Math.min(...hist)}ms</span>
+              <span class="mono" style="font-size:11px;color:#333">avg: ${Math.round(hist.reduce((a,b)=>a+b,0)/hist.length)}ms</span>
+              <span class="mono" style="font-size:11px;color:#333">max: ${Math.max(...hist)}ms</span>
+            </div>
+          </div>`;
+        }
+
+        // Traceroute
+        if (s.tracingRoute) {
+          html += `<div style="margin-top:16px;text-align:center;padding:24px">
+            <div class="animate-spin" style="font-size:24px;display:inline-block;margin-bottom:8px">\u{1F504}</div>
+            <div class="mono" style="font-size:11px;color:#555">// running traceroute to ${selInfo.name}...</div>
+          </div>`;
+        } else if (s.hops.length > 0) {
+          const maxHopPing = s.hops[s.hops.length-1]?.ping || 1;
+          html += `<div style="margin-top:16px">
+            <div class="mono" style="font-size:11px;color:#555;margin-bottom:8px;letter-spacing:0.1em">// TRACEROUTE TO ${selInfo.name.toUpperCase()}</div>
+            <div style="border-radius:8px;overflow:hidden;background:#08080f;border:1px solid #1a1a2e">`;
+          for (const hop of s.hops) {
+            const bw = Math.min(100, (hop.ping / maxHopPing) * 100);
+            html += `<div style="display:flex;align-items:center;gap:12px;padding:6px 12px;border-bottom:1px solid #0f0f1a">
+              <span class="mono" style="font-size:11px;color:#333;width:24px;text-align:right">${hop.hop}</span>
+              <div style="flex:1;min-width:0"><div class="mono" style="font-size:11px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${hop.host}</div></div>
+              <div class="lat-bg"><div class="lat-fill" style="width:${bw}%;background:${pingColor(hop.ping)}"></div></div>
+              <span class="mono" style="font-size:11px;color:${pingColor(hop.ping)};width:48px;text-align:right">${hop.ping}ms</span>
+              ${hop.loss > 0 ? `<span style="font-size:11px;color:#ef4444">${hop.loss}%</span>` : ""}
+            </div>`;
+          }
+          html += `</div></div>`;
+        }
+
+        // Verdict
+        if (selData.ping > 0) {
+          const vBg = selData.ping<=40?"#021a0a":selData.ping<=80?"#1a1500":"#1a0505";
+          const vBorder = selData.ping<=40?"#14532d":selData.ping<=80?"#422006":"#331111";
+          const vColor = selData.ping<=40?"#22c55e":selData.ping<=80?"#eab308":"#ef4444";
+          const vTitle = selData.ping<=40?"\u{1F7E2} This server fucks. Zero excuses if you lose."
+            : selData.ping<=80?"\u{1F7E1} Decent pipe. You'll feel it on piece control but it's workable."
+            : "\u{1F534} Dogshit route. Don't even bother unless you enjoy suffering.";
+          const vDesc = selData.ping<=40
+            ? `${selData.ping}ms is chef's kiss for competitive play. Builds will place instantly, edits will register clean, and your shots won't ghost.`
+            : selData.ping<=80
+            ? `${selData.ping}ms means ~${Math.round(selData.ping/16.67)} frames of input delay. You'll notice it on quick edits and fast-paced box fights. Apply the optimizations to squeeze out every ms.`
+            : `${selData.ping}ms is ${Math.round(selData.ping/16.67)} frames behind. Walls will get taken, edits will feel sluggish, and you'll lose every 50/50. Consider a different region or a better ISP.`;
+          html += `<div style="margin-top:16px;border-radius:8px;padding:16px;background:${vBg};border:1px solid ${vBorder}">
+            <div style="font-size:13px;font-weight:700;color:${vColor};margin-bottom:4px">${vTitle}</div>
+            <div style="font-size:11px;color:#555">${vDesc}</div>
+          </div>`;
+        }
+
+      } else if (s.phase === "done") {
+        html += `<div style="display:flex;align-items:center;justify-content:center;height:100%">
+          <div style="text-align:center">
+            <div style="font-size:36px;margin-bottom:12px;opacity:0.3">\u{1F448}</div>
+            <div class="mono" style="font-size:13px;color:#333">// select a server to see details</div>
+          </div>
+        </div>`;
+      } else {
+        html += `<div style="display:flex;align-items:center;justify-content:center;height:100%">
+          <div style="text-align:center">
+            <div class="animate-spin" style="font-size:36px;display:inline-block;margin-bottom:12px">\u{1F4E1}</div>
+            <div class="mono" style="font-size:13px;color:#555">// pinging servers with real TCP connections...</div>
+            <div class="mono" style="font-size:11px;color:#333;margin-top:4px">${Math.round(s.scanProgress)}% complete</div>
+          </div>
+        </div>`;
+      }
+
+      html += `</div>`; // end net-center
+
+      // ── Right Panel with Tabs ──
+      html += `<div class="net-right">`;
+
+      // Tab bar
+      html += `<div class="tab-bar">
+        <button class="tab-btn ${s.rightTab==="opts"?"active":""}" onclick="switchTab('opts')">OPTIMIZE</button>
+        <button class="tab-btn ${s.rightTab==="tunnel"?"active":""}" onclick="switchTab('tunnel')">
+          TUNNEL ${s.tunnelStatus==="connected"?'<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#22c55e;margin-left:4px;vertical-align:middle"></span>':""}
+        </button>
+        <button class="tab-btn ${s.rightTab==="bench"?"active":""}" onclick="switchTab('bench')">BENCHMARK</button>
+      </div>`;
+
+      html += `<div style="flex:1;overflow-y:auto;padding:16px">`;
+
+      if (s.rightTab === "opts") {
+        // ── Optimizations Tab ──
+        html += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <span class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em">// NETWORK TWEAKS</span>
+          ${s.phase==="done" && appliedCount < OPTIMIZATIONS.length ? `<button class="opt-btn" onclick="applyAllOpts()" style="background:#1a0a2e;color:#a78bfa;border:1px solid #2e1065">APPLY ALL</button>` : ""}
+        </div>`;
+
+        if (appliedCount > 0) {
+          html += `<div style="margin-bottom:12px;border-radius:8px;padding:8px;text-align:center;background:#021a0a;border:1px solid #14532d">
+            <span class="mono" style="font-size:11px;color:#22c55e">${appliedCount}/${OPTIMIZATIONS.length} optimizations active</span>
+          </div>`;
+        }
+
+        for (const opt of OPTIMIZATIONS) {
+          const st = s.opts[opt.id] || "idle";
+          let badge;
+          if (st === "applied") badge = `<span style="font-size:11px;padding:2px 8px;border-radius:4px;background:#052e16;color:#22c55e;border:1px solid #14532d">APPLIED</span>`;
+          else if (st === "applying") badge = `<span class="animate-pulse" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a1a00;color:#eab308;border:1px solid #422006">APPLYING...</span>`;
+          else if (st === "failed") badge = `<span style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0505;color:#ef4444;border:1px solid #331111">NEED ADMIN</span>`;
+          else badge = `<button class="opt-btn" onclick="applyOpt('${opt.id}')" style="background:#1a0a2e;color:#a78bfa;border:1px solid #2e1065">APPLY</button>`;
+
+          html += `<div class="opt-card">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+              <span style="font-size:13px;font-weight:600;color:#c4b5fd">${opt.title}</span>
+              ${badge}
+            </div>
+            <p style="font-size:11px;color:#444;margin-bottom:8px">${opt.desc}</p>
+            <code class="mono" style="font-size:11px;display:block;padding:4px 8px;border-radius:4px;background:#08080f;color:#555;word-break:break-all">${escHtml(opt.cmd)}</code>
+          </div>`;
+        }
+
+        html += `<div style="margin-top:16px;border-radius:8px;padding:12px;background:#0a0a14;border:1px solid #12121e">
+          <div class="mono" style="font-size:11px;color:#555;margin-bottom:8px;letter-spacing:0.1em">// PRO TIPS</div>
+          <div style="font-size:11px;color:#444;line-height:1.625">
+            <p style="margin-bottom:8px">\u2022 Use ethernet, not WiFi. Every wireless hop adds jitter.</p>
+            <p style="margin-bottom:8px">\u2022 Close Chrome, Discord overlay, and background downloaders before queuing.</p>
+            <p style="margin-bottom:8px">\u2022 Reboot your router weekly. Stale NAT tables are real.</p>
+            <p>\u2022 Set Fortnite to "High" priority in Task Manager.</p>
+          </div>
+        </div>`;
+
+      } else if (s.rightTab === "tunnel") {
+        // ── Tunnel Tab ──
+        const tColor = s.tunnelStatus==="connected"?"#22c55e":s.tunnelStatus==="connecting"?"#eab308":s.tunnelStatus==="error"?"#ef4444":"#555";
+        const tLabel = s.tunnelStatus==="connected"?"CONNECTED":s.tunnelStatus==="connecting"?"CONNECTING...":s.tunnelStatus==="error"?"ERROR":"DISCONNECTED";
+        const tClass = s.tunnelStatus==="connected"?"on":s.tunnelStatus==="connecting"?"connecting":"off";
+
+        html += `<div style="border-radius:8px;padding:16px;margin-bottom:12px;background:#0a0a14;border:1px solid #12121e;text-align:center">
+          <div style="font-size:36px;margin-bottom:8px">${s.tunnelStatus==="connected"?"\u{1F6E1}\uFE0F":"\u{1F50C}"}</div>
+          <div class="mono" style="font-size:13px;font-weight:700;color:${tColor};margin-bottom:4px">${tLabel}</div>
+          ${s.tunnelStats.endpoint ? `<div class="mono" style="font-size:10px;color:#444;margin-bottom:8px">relay: ${s.tunnelStats.endpoint}</div>` : ""}
+          <button class="tunnel-toggle ${tClass}" onclick="toggleTunnel()" ${!s.tunnelHasConfig?"disabled":""}
+            style="${!s.tunnelHasConfig?"opacity:0.3;cursor:not-allowed":""}"></button>
+          ${!s.tunnelHasConfig ? `<div class="mono" style="font-size:10px;color:#555;margin-top:8px">paste config below first</div>` : ""}
+        </div>`;
+
+        if (s.tunnelStatus === "connected") {
+          const tx = (s.tunnelStats.tx / 1024 / 1024).toFixed(1);
+          const rx = (s.tunnelStats.rx / 1024 / 1024).toFixed(1);
+          html += `<div style="border-radius:8px;padding:12px;margin-bottom:12px;background:#021a0a;border:1px solid #14532d">
+            <div class="mono" style="font-size:11px;color:#444;margin-bottom:4px;letter-spacing:0.1em">// TUNNEL STATS</div>
+            <div id="tunnel-stats-display" class="mono" style="font-size:11px;color:#22c55e">TX: ${tx} MB &nbsp;\u2022&nbsp; RX: ${rx} MB</div>
+            <div class="mono" style="font-size:10px;color:#333;margin-top:4px">split tunnel active \u2014 only fortnite traffic routed</div>
+          </div>`;
+        }
+
+        if (s.tunnelError) {
+          html += `<div style="border-radius:8px;padding:12px;margin-bottom:12px;background:#1a0505;border:1px solid #331111">
+            <div class="mono" style="font-size:11px;color:#ef4444">${s.tunnelError}</div>
+          </div>`;
+        }
+
+        if (!s.tunnelInstalled) {
+          html += `<div style="border-radius:8px;padding:12px;margin-bottom:12px;background:#1a1500;border:1px solid #422006">
+            <div style="font-size:13px;font-weight:600;color:#eab308;margin-bottom:4px">\u26A0 WireGuard Not Found</div>
+            <div style="font-size:11px;color:#666;margin-bottom:8px">Install WireGuard for Windows to enable the tunnel.</div>
+            <div class="mono" style="font-size:10px;color:#888">https://www.wireguard.com/install/</div>
+          </div>`;
+        }
+
+        html += `<div style="margin-bottom:12px">
+          <div class="mono" style="font-size:11px;color:#444;margin-bottom:8px;letter-spacing:0.1em">// WIREGUARD CONFIG</div>
+          <textarea id="tunnel-config-input" class="config-textarea" placeholder="[Interface]
+PrivateKey = ...
+Address = 10.66.66.2/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = ...
+Endpoint = YOUR_VPS_IP:51820
+AllowedIPs = ...">${s.tunnelConfig || ""}</textarea>
+          <button onclick="saveTunnelConfig()" style="width:100%;margin-top:8px;padding:8px;border-radius:6px;font-size:12px;font-weight:600;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;cursor:pointer;letter-spacing:0.05em">
+            SAVE CONFIG
+          </button>
+        </div>`;
+
+        html += `<div style="border-radius:8px;padding:12px;background:#0a0a14;border:1px solid #12121e">
+          <div class="mono" style="font-size:11px;color:#555;margin-bottom:8px;letter-spacing:0.1em">// SETUP GUIDE</div>
+          <div style="font-size:11px;color:#444;line-height:1.8">
+            <p style="margin-bottom:6px"><span style="color:#7c3aed;font-weight:600">1.</span> Rent a $5/mo Vultr VPS near your Fortnite server</p>
+            <p style="margin-bottom:6px"><span style="color:#7c3aed;font-weight:600">2.</span> SSH in and run <code class="mono" style="color:#666;background:#08080f;padding:1px 4px;border-radius:2px">server-setup.sh</code></p>
+            <p style="margin-bottom:6px"><span style="color:#7c3aed;font-weight:600">3.</span> Copy the client config it prints</p>
+            <p style="margin-bottom:6px"><span style="color:#7c3aed;font-weight:600">4.</span> Paste it above and hit SAVE</p>
+            <p style="margin-bottom:6px"><span style="color:#7c3aed;font-weight:600">5.</span> Flip the toggle \u2014 game traffic routes through your VPS</p>
+          </div>
+        </div>`;
+
+        html += `<div style="border-radius:8px;padding:12px;margin-top:12px;background:#0d0d1a;border:1px solid #1a1a2e">
+          <div class="mono" style="font-size:11px;color:#555;margin-bottom:8px;letter-spacing:0.1em">// HOW IT WORKS</div>
+          <div style="font-size:11px;color:#444;line-height:1.6">
+            <div class="mono" style="font-size:10px;color:#555;padding:8px;background:#08080f;border-radius:4px;line-height:1.8">
+              YOUR PC \u2192 WireGuard Tunnel \u2192 Vultr VPS \u2192 Fortnite Server<br/>
+              <span style="color:#333">(encrypted)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(direct route)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(same datacenter)</span>
+            </div>
+            <p style="margin-top:8px">Your ISP's shitty routing gets bypassed. The VPS talks directly to the game server on a backbone connection.</p>
+          </div>
+        </div>`;
+
+      } else if (s.rightTab === "bench") {
+        // ── Benchmark Tab ──
+        const benchSrv = s.benchServer || s.best || s.selected || "nae";
+
+        html += `<div style="margin-bottom:12px">
+          <div class="mono" style="font-size:11px;color:#444;margin-bottom:8px;letter-spacing:0.1em">// TEST SERVER</div>
+          <select onchange="setBenchServer(this.value)" style="width:100%;padding:8px;border-radius:6px;background:#0a0a14;border:1px solid #1a1a2e;color:#c4b5fd;font-family:'Fira Code',monospace;font-size:11px;outline:none;cursor:pointer">
+            ${SERVERS.map(srv => `<option value="${srv.id}" ${srv.id===benchSrv?"selected":""}>${srv.flag} ${srv.name} (${srv.city})</option>`).join("")}
+          </select>
+        </div>`;
+
+        const benchRunning = s.benchPhase === "running-baseline" || s.benchPhase === "running-tunnel";
+        html += `<button onclick="runBenchmark()" ${benchRunning?"disabled":""} style="
+          width:100%;padding:10px;border-radius:8px;font-size:13px;font-weight:700;
+          letter-spacing:0.05em;margin-bottom:16px;transition:all 0.3s;
+          background:${benchRunning?"#1a1a2e":"linear-gradient(135deg,#f97316,#ea580c)"};
+          color:${benchRunning?"#555":"#fff"};
+          cursor:${benchRunning?"not-allowed":"pointer"};
+          box-shadow:${!benchRunning?"0 0 20px rgba(249,115,22,0.3)":"none"};
+          border:none;
+        ">${benchRunning?`<span class="animate-spin" style="display:inline-block;margin-right:6px">\u{1F504}</span>${s.benchPhase==="running-baseline"?"TESTING BASELINE...":"TESTING TUNNEL..."}`:"RUN BENCHMARK"}</button>`;
+
+        if (benchRunning) {
+          html += `<div class="progress-bar" style="margin-bottom:16px;border-radius:4px"><div class="progress-fill" style="width:${s.benchProgress}%;background:linear-gradient(90deg,#f97316,#fb923c);border-radius:4px"></div></div>`;
+        }
+
+        if (s.benchPhase === "done" && s.benchBaseline) {
+          const bl = s.benchBaseline;
+          const tn = s.benchTunnel;
+
+          html += `<div style="border-radius:8px;padding:12px;margin-bottom:8px;background:#0a0a14;border:1px solid #12121e">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <div class="mono" style="font-size:11px;color:#555;letter-spacing:0.1em">// ${tn ? "DIRECT CONNECTION" : "CURRENT CONNECTION"}</div>
+              <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:#1a1a2e;color:#666">${tn ? "NO TUNNEL" : "ACTIVE"}</span>
+            </div>
+            <div style="display:flex;gap:8px">
+              <div style="flex:1;text-align:center;padding:8px;border-radius:6px;background:#08080f">
+                <div style="font-size:10px;color:#444;margin-bottom:2px">PING</div>
+                <div class="mono" style="font-size:20px;font-weight:700;color:${pingColor(bl.ping)}">${bl.ping < 0 ? "---" : bl.ping}</div>
+                <div style="font-size:10px;color:#444">ms</div>
+              </div>
+              <div style="flex:1;text-align:center;padding:8px;border-radius:6px;background:#08080f">
+                <div style="font-size:10px;color:#444;margin-bottom:2px">JITTER</div>
+                <div class="mono" style="font-size:20px;font-weight:700;color:${bl.jitter>15?"#f97316":"#22c55e"}">\u00B1${bl.jitter}</div>
+                <div style="font-size:10px;color:#444">ms</div>
+              </div>
+              <div style="flex:1;text-align:center;padding:8px;border-radius:6px;background:#08080f">
+                <div style="font-size:10px;color:#444;margin-bottom:2px">LOSS</div>
+                <div class="mono" style="font-size:20px;font-weight:700;color:${bl.loss>0?"#ef4444":"#22c55e"}">${bl.loss}</div>
+                <div style="font-size:10px;color:#444">%</div>
+              </div>
+            </div>
+            ${bl.detailedSamples ? `<div style="margin-top:8px">${sparklineSVG(bl.detailedSamples.filter(ss=>ss.success).map(ss=>ss.ping), 260, 30, pingColor(bl.ping))}</div>` : ""}
+          </div>`;
+
+          if (tn) {
+            const diff = bl.ping > 0 && tn.ping > 0 ? tn.ping - bl.ping : 0;
+            const improved = diff < 0;
+            const diffAbs = Math.abs(diff);
+            const diffPct = bl.ping > 0 ? Math.round((diffAbs / bl.ping) * 100) : 0;
+
+            html += `<div style="border-radius:8px;padding:12px;margin-bottom:8px;background:#0a0a14;border:1px solid ${improved?"#14532d":"#331111"}">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <div class="mono" style="font-size:11px;color:#555;letter-spacing:0.1em">// VIA TUNNEL</div>
+                <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:${improved?"#052e16":"#1a0505"};color:${improved?"#22c55e":"#ef4444"}">${improved?"FASTER":"SLOWER"}</span>
+              </div>
+              <div style="display:flex;gap:8px">
+                <div style="flex:1;text-align:center;padding:8px;border-radius:6px;background:#08080f">
+                  <div style="font-size:10px;color:#444;margin-bottom:2px">PING</div>
+                  <div class="mono" style="font-size:20px;font-weight:700;color:${pingColor(tn.ping)}">${tn.ping < 0 ? "---" : tn.ping}</div>
+                  <div style="font-size:10px;color:#444">ms</div>
+                </div>
+                <div style="flex:1;text-align:center;padding:8px;border-radius:6px;background:#08080f">
+                  <div style="font-size:10px;color:#444;margin-bottom:2px">JITTER</div>
+                  <div class="mono" style="font-size:20px;font-weight:700;color:${tn.jitter>15?"#f97316":"#22c55e"}">\u00B1${tn.jitter}</div>
+                  <div style="font-size:10px;color:#444">ms</div>
+                </div>
+                <div style="flex:1;text-align:center;padding:8px;border-radius:6px;background:#08080f">
+                  <div style="font-size:10px;color:#444;margin-bottom:2px">LOSS</div>
+                  <div class="mono" style="font-size:20px;font-weight:700;color:${tn.loss>0?"#ef4444":"#22c55e"}">${tn.loss}</div>
+                  <div style="font-size:10px;color:#444">%</div>
+                </div>
+              </div>
+              ${tn.detailedSamples ? `<div style="margin-top:8px">${sparklineSVG(tn.detailedSamples.filter(ss=>ss.success).map(ss=>ss.ping), 260, 30, pingColor(tn.ping))}</div>` : ""}
+            </div>`;
+
+            html += `<div style="border-radius:8px;padding:16px;margin-bottom:12px;background:${improved?"#021a0a":"#1a0505"};border:1px solid ${improved?"#14532d":"#331111"};text-align:center">
+              <div style="font-size:36px;margin-bottom:4px">${improved?"\u{1F525}":"\u{1F4A9}"}</div>
+              <div class="mono" style="font-size:24px;font-weight:700;color:${improved?"#22c55e":"#ef4444"}">${improved?"-":"+"} ${diffAbs}ms</div>
+              <div class="mono" style="font-size:11px;color:${improved?"#22c55e80":"#ef444480"};margin-top:2px">${diffPct}% ${improved?"improvement":"slower"}</div>
+              <div style="font-size:12px;color:#555;margin-top:8px">${
+                improved && diffAbs >= 15 ? "Your tunnel is shitting on your ISP's routing. Keep it on."
+                : improved && diffAbs >= 5 ? "Solid improvement. Tunnel is doing its job."
+                : improved ? "Small gains, but every ms counts in box fights."
+                : diffAbs <= 3 ? "Basically the same. Your ISP's route is already decent."
+                : diffAbs <= 10 ? "Slight overhead from encryption. Try a VPS closer to the game server."
+                : "Your ISP actually has better routing here. Try a different VPS region."
+              }</div>
+            </div>`;
+          } else {
+            html += `<div style="border-radius:8px;padding:12px;margin-bottom:12px;background:#1a1500;border:1px solid #422006;text-align:center">
+              <div style="font-size:11px;color:#eab308;margin-bottom:4px">\u26A0 TUNNEL NOT CONNECTED</div>
+              <div style="font-size:11px;color:#666">Connect your WireGuard tunnel in the TUNNEL tab, then run the benchmark again to compare direct vs tunnel performance.</div>
+            </div>`;
+          }
+        }
+
+        if (s.benchHistory.length > 0) {
+          html += `<div style="border-radius:8px;padding:12px;margin-bottom:12px;background:#0a0a14;border:1px solid #12121e">
+            <div class="mono" style="font-size:11px;color:#444;margin-bottom:8px;letter-spacing:0.1em">// TEST HISTORY</div>
+            ${s.benchHistory.slice().reverse().map(h => {
+              const time = new Date(h.timestamp).toLocaleTimeString();
+              const diff = h.tunnel && h.baseline.ping > 0 && h.tunnel.ping > 0 ? h.tunnel.ping - h.baseline.ping : null;
+              return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #0f0f1a">
+                <div>
+                  <span class="mono" style="font-size:10px;color:#555">${time}</span>
+                  <span style="font-size:10px;color:#333;margin-left:4px">${h.serverName}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="mono" style="font-size:11px;color:${pingColor(h.baseline.ping)}">${h.baseline.ping}ms</span>
+                  ${diff !== null ? `<span class="mono" style="font-size:10px;color:#333">\u2192</span>
+                  <span class="mono" style="font-size:11px;color:${pingColor(h.tunnel.ping)}">${h.tunnel.ping}ms</span>
+                  <span class="mono" style="font-size:10px;color:${diff<0?"#22c55e":"#ef4444"}">${diff<0?"":"+"}${diff}</span>` : ""}
+                </div>
+              </div>`;
+            }).join("")}
+          </div>`;
+        }
+
+        // VS Commercial services
+        html += `<div style="border-radius:8px;padding:12px;background:#0d0d1a;border:1px solid #1a1a2e">
+          <div class="mono" style="font-size:11px;color:#555;margin-bottom:10px;letter-spacing:0.1em">// VS COMMERCIAL SERVICES</div>
+          <div style="font-size:11px;line-height:1.6">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px;margin-bottom:4px;border-radius:6px;background:#08080f;border:1px solid #14532d">
+              <div><span style="font-weight:700;color:#22c55e">FN OPTIMIZER</span> <span style="font-size:10px;color:#333">(THIS APP)</span></div>
+              <span class="mono" style="font-size:11px;color:#22c55e">$5/mo</span>
+            </div>
+            <div style="padding:0 8px 8px;font-size:10px;color:#555;line-height:1.8">
+              \u2705 WireGuard (fastest VPN protocol)<br/>\u2705 Split tunnel (game traffic only)<br/>\u2705 BBR congestion control<br/>\u2705 Full control \u2014 your server<br/>\u2705 Network stack optimizations built-in
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px;margin-bottom:4px;border-radius:6px;background:#08080f">
+              <span style="font-weight:600;color:#888">ExitLag</span>
+              <span class="mono" style="font-size:11px;color:#f97316">$6.50/mo</span>
+            </div>
+            <div style="padding:0 8px 8px;font-size:10px;color:#444;line-height:1.8">
+              \u2705 Multi-path routing<br/>\u274C Proprietary protocol<br/>\u274C Collects usage data
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px;margin-bottom:4px;border-radius:6px;background:#08080f">
+              <span style="font-weight:600;color:#888">Haste / WTFast</span>
+              <span class="mono" style="font-size:11px;color:#ef4444">$10+/mo</span>
+            </div>
+            <div style="padding:0 8px 8px;font-size:10px;color:#444;line-height:1.8">
+              \u2705 Easy setup<br/>\u274C Expensive<br/>\u274C No split tunnel control
+            </div>
+          </div>
+        </div>`;
+      }
+
+      html += `</div></div>`; // end right panel content + right panel
+      html += `</div>`; // end net-main
+      html += `</div>`; // end network section
+
+      // ════════════════════════════════════════════════════════
+      // DEBLOAT SECTION
+      // ════════════════════════════════════════════════════════
+      html += `<div class="section-page ${s.activeSection==='debloat'?'active':''}">`;
+
+      // Debloat header
+      html += `<div class="section-header">
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="font-size:20px">\u{1F5D1}\uFE0F</span>
+          <div>
+            <div style="font-weight:700;font-size:18px;color:#a78bfa">SYSTEM DEBLOATER</div>
+            <div class="mono" style="font-size:11px;color:#333">// remove bloatware, disable telemetry, optimize performance</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button onclick="loadDebloatData()" class="action-btn ghost" ${s.debloatScanning?"disabled":""}>
+            ${s.debloatScanning?'<span class="animate-spin" style="display:inline-block;margin-right:4px">\u{1F504}</span>SCANNING...':'REFRESH'}
+          </button>
+          <button onclick="showNukeConfirm()" class="action-btn red" ${s.debloatNuking?"disabled":""}>
+            ${s.debloatNuking?'<span class="animate-spin" style="display:inline-block;margin-right:4px">\u{1F504}</span>NUKING...':'\u2622\uFE0F NUKE ALL'}
+          </button>
+        </div>
+      </div>`;
+
+      // Sub-tabs
+      html += `<div style="border-bottom:1px solid #1a1a2e;background:#08080f;">
+        <div class="sub-tab-bar">
+          <button class="sub-tab ${s.debloatTab==='apps'?'active':''}" onclick="switchDebloatTab('apps')">APPS (${s.debloatApps.length})</button>
+          <button class="sub-tab ${s.debloatTab==='services'?'active':''}" onclick="switchDebloatTab('services')">SERVICES (${s.debloatServices.length})</button>
+          <button class="sub-tab ${s.debloatTab==='telemetry'?'active':''}" onclick="switchDebloatTab('telemetry')">TELEMETRY (${s.debloatTelemetry.length})</button>
+          <button class="sub-tab ${s.debloatTab==='performance'?'active':''}" onclick="switchDebloatTab('performance')">PERFORMANCE (${s.debloatPerf.length})</button>
+        </div>
+      </div>`;
+
+      html += `<div class="full-section">`;
+
+      if (s.debloatScanning && s.debloatApps.length === 0) {
+        html += `<div style="text-align:center;padding:48px">
+          <div class="animate-spin" style="font-size:36px;display:inline-block;margin-bottom:12px">\u{1F504}</div>
+          <div class="mono" style="font-size:13px;color:#555">// scanning system...</div>
+        </div>`;
+      } else if (s.debloatTab === "apps") {
+        // Bulk action
+        const appsRemaining = s.debloatApps.filter(a => a.status !== "removed").length;
+        if (appsRemaining > 0) {
+          html += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <span class="mono" style="font-size:11px;color:#444">${s.debloatApps.filter(a=>a.status==="removed").length}/${s.debloatApps.length} removed</span>
+            <button onclick="debloatRemoveAllApps()" class="action-btn purple">REMOVE ALL (${appsRemaining})</button>
+          </div>`;
+        }
+        if (s.debloatApps.length === 0) {
+          html += `<div style="text-align:center;padding:48px"><div class="mono" style="color:#333">// no bloatware apps detected. click REFRESH to scan.</div></div>`;
+        }
+        for (const app of s.debloatApps) {
+          const done = app.status === "removed";
+          html += `<div class="item-card ${done?"done":""}">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:600;color:${done?"#22c55e":"#c4b5fd"}">${escHtml(app.name || app.id)}</div>
+                <div style="font-size:11px;color:#444;margin-top:2px">${escHtml(app.description || app.publisher || "Windows bloatware app")}</div>
+              </div>
+              <div style="margin-left:12px">
+                ${done ? renderStatusBadge("removed") :
+                  app.status === "removing" ? renderStatusBadge("removing") :
+                  app.status === "failed" ? renderStatusBadge("failed") :
+                  app.status === "needadmin" ? renderStatusBadge("needadmin") :
+                  `<button onclick="debloatRemoveApp('${app.id}')" class="action-btn purple" style="padding:4px 12px">REMOVE</button>`}
+              </div>
+            </div>
+          </div>`;
+        }
+
+      } else if (s.debloatTab === "services") {
+        const svcsRemaining = s.debloatServices.filter(sv => sv.status !== "disabled").length;
+        if (svcsRemaining > 0) {
+          html += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <span class="mono" style="font-size:11px;color:#444">${s.debloatServices.filter(sv=>sv.status==="disabled").length}/${s.debloatServices.length} disabled</span>
+            <button onclick="debloatDisableAllServices()" class="action-btn purple">DISABLE ALL (${svcsRemaining})</button>
+          </div>`;
+        }
+        if (s.debloatServices.length === 0) {
+          html += `<div style="text-align:center;padding:48px"><div class="mono" style="color:#333">// no unnecessary services detected. click REFRESH to scan.</div></div>`;
+        }
+        for (const svc of s.debloatServices) {
+          const done = svc.status === "disabled";
+          html += `<div class="item-card ${done?"done":""}">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:600;color:${done?"#22c55e":"#c4b5fd"}">${escHtml(svc.name || svc.id)}</div>
+                <div style="font-size:11px;color:#444;margin-top:2px">${escHtml(svc.description || "Unnecessary Windows service")}</div>
+                ${svc.serviceName ? `<code class="mono" style="font-size:10px;color:#555;margin-top:4px;display:inline-block">${escHtml(svc.serviceName)}</code>` : ""}
+              </div>
+              <div style="margin-left:12px">
+                ${done ? renderStatusBadge("disabled") :
+                  svc.status === "disabling" ? renderStatusBadge("disabling") :
+                  svc.status === "failed" ? renderStatusBadge("failed") :
+                  svc.status === "needadmin" ? renderStatusBadge("needadmin") :
+                  `<button onclick="debloatDisableService('${svc.id}')" class="action-btn purple" style="padding:4px 12px">DISABLE</button>`}
+              </div>
+            </div>
+          </div>`;
+        }
+
+      } else if (s.debloatTab === "telemetry") {
+        const telRemaining = s.debloatTelemetry.filter(t => t.status !== "applied").length;
+        if (telRemaining > 0) {
+          html += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <span class="mono" style="font-size:11px;color:#444">${s.debloatTelemetry.filter(t=>t.status==="applied").length}/${s.debloatTelemetry.length} applied</span>
+            <button onclick="debloatApplyAllTelemetry()" class="action-btn purple">APPLY ALL (${telRemaining})</button>
+          </div>`;
+        }
+        if (s.debloatTelemetry.length === 0) {
+          html += `<div style="text-align:center;padding:48px"><div class="mono" style="color:#333">// no telemetry tweaks available. click REFRESH to scan.</div></div>`;
+        }
+        for (const item of s.debloatTelemetry) {
+          const done = item.status === "applied";
+          html += `<div class="item-card ${done?"done":""}">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:600;color:${done?"#22c55e":"#c4b5fd"}">${escHtml(item.name || item.id)}</div>
+                <div style="font-size:11px;color:#444;margin-top:2px">${escHtml(item.description || "Disable Windows telemetry/tracking")}</div>
+                ${item.registry ? `<code class="mono" style="font-size:10px;color:#555;margin-top:4px;display:inline-block">${escHtml(item.registry)}</code>` : ""}
+              </div>
+              <div style="margin-left:12px">
+                ${done ? renderStatusBadge("applied") :
+                  item.status === "applying" ? renderStatusBadge("applying") :
+                  item.status === "failed" ? renderStatusBadge("failed") :
+                  item.status === "needadmin" ? renderStatusBadge("needadmin") :
+                  `<button onclick="debloatApplyTelemetry('${item.id}')" class="action-btn purple" style="padding:4px 12px">APPLY</button>`}
+              </div>
+            </div>
+          </div>`;
+        }
+
+      } else if (s.debloatTab === "performance") {
+        const perfRemaining = s.debloatPerf.filter(p => p.status !== "applied").length;
+        if (perfRemaining > 0) {
+          html += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <span class="mono" style="font-size:11px;color:#444">${s.debloatPerf.filter(p=>p.status==="applied").length}/${s.debloatPerf.length} applied</span>
+            <button onclick="debloatApplyAllPerf()" class="action-btn purple">APPLY ALL (${perfRemaining})</button>
+          </div>`;
+        }
+        if (s.debloatPerf.length === 0) {
+          html += `<div style="text-align:center;padding:48px"><div class="mono" style="color:#333">// no performance tweaks available. click REFRESH to scan.</div></div>`;
+        }
+        for (const item of s.debloatPerf) {
+          const done = item.status === "applied";
+          html += `<div class="item-card ${done?"done":""}">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:600;color:${done?"#22c55e":"#c4b5fd"}">${escHtml(item.name || item.id)}</div>
+                <div style="font-size:11px;color:#444;margin-top:2px">${escHtml(item.description || "System performance optimization")}</div>
+                ${item.registry ? `<code class="mono" style="font-size:10px;color:#555;margin-top:4px;display:inline-block">${escHtml(item.registry)}</code>` : ""}
+              </div>
+              <div style="margin-left:12px">
+                ${done ? renderStatusBadge("applied") :
+                  item.status === "applying" ? renderStatusBadge("applying") :
+                  item.status === "failed" ? renderStatusBadge("failed") :
+                  item.status === "needadmin" ? renderStatusBadge("needadmin") :
+                  `<button onclick="debloatApplyPerf('${item.id}')" class="action-btn purple" style="padding:4px 12px">APPLY</button>`}
+              </div>
+            </div>
+          </div>`;
+        }
+      }
+
+      html += `</div>`; // end full-section
+      html += `</div>`; // end debloat section
+
+      // ════════════════════════════════════════════════════════
+      // TWEAKS SECTION
+      // ════════════════════════════════════════════════════════
+      html += `<div class="section-page ${s.activeSection==='tweaks'?'active':''}">`;
+
+      // Tweaks header
+      const totalTweaks = s.tweakCategories.reduce((acc, c) => acc + (c.tweaks ? c.tweaks.length : 0), 0);
+      const appliedTweaks = Object.keys(s.tweaksApplied).length;
+      const safeTweaks = s.tweakCategories.reduce((acc, c) => acc + (c.tweaks ? c.tweaks.filter(t => !t.danger && !s.tweaksApplied[t.id]).length : 0), 0);
+
+      html += `<div class="section-header">
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="font-size:20px">\u26A1</span>
+          <div>
+            <div style="font-weight:700;font-size:18px;color:#a78bfa">GAMING TWEAKS</div>
+            <div class="mono" style="font-size:11px;color:#333">// registry & system tweaks for maximum FPS and minimum input lag</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${appliedTweaks > 0 ? `<span class="mono" style="font-size:11px;color:#22c55e">${appliedTweaks}/${totalTweaks} applied</span>` : ""}
+          ${safeTweaks > 0 ? `<button onclick="applyAllSafeTweaks()" class="action-btn green">APPLY ALL SAFE (${safeTweaks})</button>` : ""}
+          <button onclick="loadTweaks()" class="action-btn ghost">REFRESH</button>
+        </div>
+      </div>`;
+
+      html += `<div class="full-section">`;
+
+      if (s.tweakCategories.length === 0) {
+        html += `<div style="text-align:center;padding:48px">
+          <div style="font-size:48px;margin-bottom:12px;opacity:0.2">\u26A1</div>
+          <div class="mono" style="font-size:13px;color:#333">// loading gaming tweaks...</div>
+          <div class="mono" style="font-size:11px;color:#222;margin-top:8px">// GPU, input, CPU, and memory optimizations</div>
+        </div>`;
+      }
+
+      for (const cat of s.tweakCategories) {
+        const isOpen = !s.tweakCollapsed[cat.id];
+        const catApplied = cat.tweaks ? cat.tweaks.filter(t => s.tweaksApplied[t.id]).length : 0;
+        const catTotal = cat.tweaks ? cat.tweaks.length : 0;
+        const catIcon = cat.id === "gpu" ? "\u{1F3AE}" : cat.id === "input" ? "\u{1F5B1}\uFE0F" : cat.id === "cpu" ? "\u{1F9E0}" : "\u{1F4BE}";
+
+        html += `<div class="collapse-header ${isOpen?"open":""}" onclick="toggleTweakCategory('${cat.id}')">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:16px">${catIcon}</span>
+            <span style="font-size:14px;font-weight:700;color:#c4b5fd">${escHtml(cat.name || cat.id)}</span>
+            <span class="mono" style="font-size:10px;color:#555">${catApplied}/${catTotal}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${catApplied < catTotal ? `<button onclick="event.stopPropagation();applyTweakCategory('${cat.id}')" class="action-btn ghost" style="padding:3px 10px;font-size:10px">APPLY ALL</button>` : `<span class="badge badge-applied">ALL APPLIED</span>`}
+            <span style="color:#555;font-size:12px;transition:transform 0.2s;transform:rotate(${isOpen?'180':'0'}deg)">\u25BC</span>
+          </div>
+        </div>`;
+
+        if (isOpen && cat.tweaks) {
+          html += `<div class="collapse-body">`;
+          for (const tweak of cat.tweaks) {
+            const isApplied = s.tweaksApplied[tweak.id];
+            const isApplying = s.tweakApplying[tweak.id] === true;
+            const isDanger = tweak.danger;
+            const needsReboot = tweak.reboot;
+
+            html += `<div class="item-card ${isApplied?"done":""} ${isDanger?"danger":""}">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between">
+                <div style="flex:1;min-width:0">
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                    <span style="font-size:13px;font-weight:600;color:${isApplied?"#22c55e":isDanger?"#ef4444":"#c4b5fd"}">${escHtml(tweak.name || tweak.id)}</span>
+                    ${isDanger ? '<span style="font-size:10px;padding:1px 6px;border-radius:3px;background:#1a0505;color:#ef4444;border:1px solid #331111">\u26A0 DANGER</span>' : ""}
+                    ${needsReboot ? '<span style="font-size:10px;padding:1px 6px;border-radius:3px;background:#1a1500;color:#eab308;border:1px solid #422006">\u{1F504} REBOOT</span>' : ""}
+                  </div>
+                  <div style="font-size:11px;color:#444;margin-top:4px">${escHtml(tweak.description || "")}</div>
+                  ${tweak.command ? `<code class="mono" style="font-size:10px;display:block;padding:4px 8px;border-radius:4px;background:#08080f;color:#555;margin-top:6px;word-break:break-all">${escHtml(tweak.command)}</code>` : ""}
+                  ${isDanger && tweak.warning ? `<div style="font-size:10px;color:#ef4444;margin-top:4px">\u26A0 ${escHtml(tweak.warning)}</div>` : ""}
+                </div>
+                <div style="margin-left:12px;flex-shrink:0">
+                  ${isApplied ? renderStatusBadge("applied") :
+                    isApplying ? renderStatusBadge("applying") :
+                    `<button onclick="applyTweak('${tweak.id}')" class="action-btn ${isDanger?'red':'purple'}" style="padding:4px 12px">APPLY</button>`}
+                </div>
+              </div>
+            </div>`;
+          }
+          html += `</div>`;
+        }
+      }
+
+      html += `</div>`; // end full-section
+      html += `</div>`; // end tweaks section
+
+      // ════════════════════════════════════════════════════════
+      // OVERCLOCK SECTION
+      // ════════════════════════════════════════════════════════
+      html += `<div class="section-page ${s.activeSection==='overclock'?'active':''}">`;
+
+      html += `<div class="section-header">
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="font-size:20px">\u{1F525}</span>
+          <div>
+            <div style="font-weight:700;font-size:18px;color:#a78bfa">HARDWARE OVERCLOCK</div>
+            <div class="mono" style="font-size:11px;color:#333">// GPU, CPU & RAM tuning with live monitoring</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="mono" style="font-size:10px;color:${s.hwPolling?"#22c55e":"#555"}">${s.hwPolling?"\u25CF LIVE":"\u25CB PAUSED"}</span>
+          <button onclick="loadHwData()" class="action-btn ghost">DETECT HARDWARE</button>
+        </div>
+      </div>`;
+
+      html += `<div class="full-section">`;
+
+      // Hardware info cards
+      if (s.hwInfo) {
+        const hw = s.hwInfo;
+        html += `<div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em;margin-bottom:12px">// DETECTED HARDWARE</div>
+        <div class="grid-4" style="margin-bottom:24px">
+          <div class="hw-card">
+            <div style="font-size:10px;color:#555;margin-bottom:6px">CPU</div>
+            <div style="font-size:13px;font-weight:600;color:#c4b5fd;margin-bottom:4px">${escHtml(hw.cpu?.name || "Unknown")}</div>
+            <div class="mono" style="font-size:10px;color:#555">${hw.cpu?.cores || "?"} cores / ${hw.cpu?.threads || "?"} threads</div>
+            <div class="mono" style="font-size:10px;color:#555">${hw.cpu?.baseClock || "?"}GHz base</div>
+          </div>
+          <div class="hw-card">
+            <div style="font-size:10px;color:#555;margin-bottom:6px">GPU</div>
+            <div style="font-size:13px;font-weight:600;color:#c4b5fd;margin-bottom:4px">${escHtml(hw.gpu?.name || "Unknown")}</div>
+            <div class="mono" style="font-size:10px;color:#555">VRAM: ${hw.gpu?.vram || "?"}GB</div>
+            <div class="mono" style="font-size:10px;color:#555">${hw.gpu?.driver || ""}</div>
+          </div>
+          <div class="hw-card">
+            <div style="font-size:10px;color:#555;margin-bottom:6px">RAM</div>
+            <div style="font-size:13px;font-weight:600;color:#c4b5fd;margin-bottom:4px">${hw.ram?.total || "?"}GB ${hw.ram?.type || ""}</div>
+            <div class="mono" style="font-size:10px;color:#555">${hw.ram?.speed || "?"}MHz</div>
+            <div class="mono" style="font-size:10px;color:#555">${hw.ram?.slots || "?"} slots</div>
+          </div>
+          <div class="hw-card">
+            <div style="font-size:10px;color:#555;margin-bottom:6px">MOTHERBOARD</div>
+            <div style="font-size:13px;font-weight:600;color:#c4b5fd;margin-bottom:4px">${escHtml(hw.mobo?.name || "Unknown")}</div>
+            <div class="mono" style="font-size:10px;color:#555">${escHtml(hw.mobo?.manufacturer || "")}</div>
+            <div class="mono" style="font-size:10px;color:#555">BIOS: ${hw.mobo?.bios || "?"}</div>
+          </div>
+        </div>`;
+      } else {
+        html += `<div style="text-align:center;padding:32px;margin-bottom:24px;background:#0a0a14;border-radius:8px;border:1px solid #12121e">
+          <div style="font-size:36px;margin-bottom:8px;opacity:0.3">\u{1F50D}</div>
+          <div class="mono" style="font-size:13px;color:#333">// click DETECT HARDWARE to scan your system</div>
+        </div>`;
+      }
+
+      // Live monitoring
+      html += `<div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em;margin-bottom:12px">// LIVE MONITORING <span style="color:${s.hwPolling?"#22c55e":"#555"}">(${s.hwPolling?"updating every 2s":"paused"})</span></div>
+      <div id="hw-monitor-area" style="margin-bottom:24px">
+        ${renderHwMonitor()}
+      </div>`;
+
+      // GPU Presets
+      html += `<div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em;margin-bottom:12px">// GPU PRESETS</div>
+      <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap">`;
+
+      const gpuPresetLabels = [
+        { id: "stock", label: "Stock", desc: "Default clocks", pct: "0%" },
+        { id: "mild", label: "Mild OC", desc: "+5% power", pct: "+5%" },
+        { id: "moderate", label: "Moderate OC", desc: "+10% power", pct: "+10%" },
+        { id: "aggressive", label: "Aggressive OC", desc: "+15% power", pct: "+15%" },
+      ];
+      for (const p of gpuPresetLabels) {
+        const isActive = s.hwActiveGpu === p.id;
+        html += `<button onclick="applyGpuPreset('${p.id}')" class="preset-btn ${isActive?"active-preset":""} ${p.id==="aggressive"?"preset-aggressive":""}" style="flex:1;min-width:100px">
+          <div style="font-weight:600">${p.label}</div>
+          <div style="font-size:10px;color:#555;margin-top:2px">${p.desc}</div>
+          <div class="mono" style="font-size:11px;color:${p.id==="aggressive"?"#ef4444":"#7c3aed"};margin-top:4px">${p.pct}</div>
+        </button>`;
+      }
+      html += `<button onclick="resetGpu()" class="preset-btn" style="min-width:80px">
+        <div style="font-weight:600">Reset</div>
+        <div style="font-size:10px;color:#555;margin-top:2px">Factory</div>
+      </button>`;
+      html += `</div>`;
+
+      // CPU Presets
+      html += `<div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em;margin-bottom:12px">// CPU POWER PRESETS</div>
+      <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap">`;
+
+      const cpuPresetLabels = [
+        { id: "balanced", label: "Balanced" },
+        { id: "highperf", label: "High Perf" },
+        { id: "ultimate", label: "Ultimate" },
+        { id: "forcemax", label: "Force Max" },
+        { id: "unpark", label: "Unpark All" },
+      ];
+      for (const p of cpuPresetLabels) {
+        const isActive = s.hwActiveCpu === p.id;
+        html += `<button onclick="applyCpuPreset('${p.id}')" class="preset-btn ${isActive?"active-preset":""}" style="flex:1;min-width:80px">
+          <div style="font-weight:600">${p.label}</div>
+        </button>`;
+      }
+      html += `</div>`;
+
+      // RAM Tweaks
+      html += `<div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em;margin-bottom:12px">// RAM TWEAKS</div>`;
+      if (s.hwRamTweaks.length > 0) {
+        html += `<div style="margin-bottom:24px">`;
+        for (const tweak of s.hwRamTweaks) {
+          const done = tweak.status === "applied";
+          html += `<div class="item-card ${done?"done":""}">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div>
+                <div style="font-size:13px;font-weight:600;color:${done?"#22c55e":"#c4b5fd"}">${escHtml(tweak.name || tweak.id)}</div>
+                <div style="font-size:11px;color:#444;margin-top:2px">${escHtml(tweak.description || "")}</div>
+              </div>
+              ${done ? renderStatusBadge("applied") :
+                tweak.status === "applying" ? renderStatusBadge("applying") :
+                tweak.status === "failed" ? renderStatusBadge("failed") :
+                `<button onclick="applyRamTweak('${tweak.id}')" class="action-btn purple" style="padding:4px 12px">APPLY</button>`}
+            </div>
+          </div>`;
+        }
+        html += `</div>`;
+      } else {
+        html += `<div style="padding:16px;margin-bottom:24px;border-radius:8px;background:#0a0a14;border:1px solid #12121e">
+          <div class="mono" style="font-size:11px;color:#333">// detect hardware first to see available RAM tweaks</div>
+        </div>`;
+      }
+
+      // Stress Test
+      html += `<div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em;margin-bottom:12px">// STRESS TEST</div>
+      <div style="border-radius:8px;padding:16px;background:#0a0a14;border:1px solid #12121e;margin-bottom:24px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <span style="font-size:11px;color:#888">Duration:</span>
+          <select onchange="state.hwStressDuration=parseInt(this.value)" style="padding:4px 8px;border-radius:4px;background:#08080f;border:1px solid #1a1a2e;color:#c4b5fd;font-family:'Fira Code',monospace;font-size:11px">
+            <option value="10" ${s.hwStressDuration===10?"selected":""}>10 seconds</option>
+            <option value="30" ${s.hwStressDuration===30?"selected":""}>30 seconds</option>
+            <option value="60" ${s.hwStressDuration===60?"selected":""}>60 seconds</option>
+            <option value="300" ${s.hwStressDuration===300?"selected":""}>5 minutes</option>
+          </select>
+          <button onclick="runStressTest()" class="action-btn orange" ${s.hwStressing?"disabled":""}>
+            ${s.hwStressing?'<span class="animate-spin" style="display:inline-block;margin-right:4px">\u{1F504}</span>TESTING...':'RUN STRESS TEST'}
+          </button>
+        </div>
+        ${s.hwStressing ? `<div class="stress-bar"><div id="stress-progress" class="stress-fill" style="width:${s.hwStressProgress}%"></div></div>
+          <div class="mono" style="font-size:10px;color:#f97316;margin-top:4px;text-align:center">${Math.round(s.hwStressProgress)}% \u2014 monitoring temps...</div>` : ""}
+      </div>`;
+
+      html += `</div>`; // end full-section
+      html += `</div>`; // end overclock section
+
+      // ════════════════════════════════════════════════════════
+      // BIOS SECTION
+      // ════════════════════════════════════════════════════════
+      html += `<div class="section-page ${s.activeSection==='bios'?'active':''}">`;
+
+      html += `<div class="section-header">
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="font-size:20px">\u2699\uFE0F</span>
+          <div>
+            <div style="font-weight:700;font-size:18px;color:#a78bfa">BIOS OPTIMIZATION</div>
+            <div class="mono" style="font-size:11px;color:#333">// BIOS settings, hidden options & optimization guide</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button onclick="loadBiosData()" class="action-btn ghost">REFRESH</button>
+          <button onclick="showBiosRebootConfirm()" class="action-btn orange">\u{1F504} REBOOT TO BIOS</button>
+        </div>
+      </div>`;
+
+      html += `<div class="full-section">`;
+
+      // BIOS info card
+      if (s.biosInfoData) {
+        const bi = s.biosInfoData;
+        html += `<div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em;margin-bottom:12px">// BIOS / MOTHERBOARD INFO</div>
+        <div class="grid-2" style="margin-bottom:24px">
+          <div class="hw-card">
+            <div style="font-size:10px;color:#555;margin-bottom:6px">BIOS</div>
+            <div style="font-size:14px;font-weight:600;color:#c4b5fd;margin-bottom:6px">${escHtml(bi.vendor || "Unknown")} ${escHtml(bi.version || "")}</div>
+            <div class="mono" style="font-size:10px;color:#555">Date: ${bi.date || "Unknown"}</div>
+            <div class="mono" style="font-size:10px;color:#555">Mode: ${bi.mode || "UEFI"}</div>
+            <div class="mono" style="font-size:10px;color:#555">Secure Boot: ${bi.secureBoot ? "Enabled" : "Disabled"}</div>
+          </div>
+          <div class="hw-card">
+            <div style="font-size:10px;color:#555;margin-bottom:6px">MOTHERBOARD</div>
+            <div style="font-size:14px;font-weight:600;color:#c4b5fd;margin-bottom:6px">${escHtml(bi.moboName || "Unknown")}</div>
+            <div class="mono" style="font-size:10px;color:#555">Manufacturer: ${escHtml(bi.moboManufacturer || "Unknown")}</div>
+            <div class="mono" style="font-size:10px;color:#555">Chipset: ${escHtml(bi.chipset || "Unknown")}</div>
+            <div class="mono" style="font-size:10px;color:#555">TPM: ${bi.tpm ? "Present" : "Not detected"}</div>
+          </div>
+        </div>`;
+      } else {
+        html += `<div style="text-align:center;padding:32px;margin-bottom:24px;background:#0a0a14;border-radius:8px;border:1px solid #12121e">
+          <div style="font-size:36px;margin-bottom:8px;opacity:0.3">\u2699\uFE0F</div>
+          <div class="mono" style="font-size:13px;color:#333">// click REFRESH to load BIOS information</div>
+        </div>`;
+      }
+
+      // Hidden settings
+      html += `<div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em;margin-bottom:12px">// HIDDEN SETTINGS (BCD / WMI)</div>`;
+      if (s.biosHiddenData.length > 0) {
+        html += `<div style="border-radius:8px;overflow:hidden;background:#08080f;border:1px solid #1a1a2e;margin-bottom:24px">`;
+        for (const setting of s.biosHiddenData) {
+          html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid #12121e">
+            <div style="flex:1">
+              <div style="font-size:12px;font-weight:600;color:#c4b5fd">${escHtml(setting.name || setting.id)}</div>
+              <div style="font-size:11px;color:#444;margin-top:2px">${escHtml(setting.description || "")}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="mono" style="font-size:11px;color:#888">${escHtml(setting.currentValue || "N/A")}</span>
+              ${setting.recommended && setting.currentValue !== setting.recommended ?
+                `<span class="mono" style="font-size:10px;color:#eab308">\u2192 ${escHtml(setting.recommended)}</span>` : ""}
+            </div>
+          </div>`;
+        }
+        html += `</div>`;
+      } else {
+        html += `<div style="padding:16px;margin-bottom:24px;border-radius:8px;background:#0a0a14;border:1px solid #12121e">
+          <div class="mono" style="font-size:11px;color:#333">// no hidden settings detected. refresh to scan.</div>
+        </div>`;
+      }
+
+      // BCD / Windows boot tweaks
+      html += `<div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em;margin-bottom:12px">// WINDOWS BOOT TWEAKS</div>
+      <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap">
+        <button onclick="applyBcdSetting('disabledynamictick','yes')" class="action-btn ghost">Disable Dynamic Tick</button>
+        <button onclick="applyBcdSetting('useplatformtick','yes')" class="action-btn ghost">Use Platform Tick</button>
+        <button onclick="applyBcdSetting('tscsyncpolicy','enhanced')" class="action-btn ghost">TSC Sync Enhanced</button>
+        <button onclick="disableHyperV()" class="action-btn ghost">Disable Hyper-V</button>
+      </div>`;
+
+      // BIOS guide
+      html += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div class="mono" style="font-size:11px;color:#444;letter-spacing:0.1em">// BIOS OPTIMIZATION GUIDE</div>
+        <div style="display:flex;gap:4px">
+          <button class="filter-chip ${s.biosCpuFilter==='all'?'active':''}" onclick="setBiosCpuFilter('all')">ALL</button>
+          <button class="filter-chip ${s.biosCpuFilter==='amd'?'active':''}" onclick="setBiosCpuFilter('amd')">AMD</button>
+          <button class="filter-chip ${s.biosCpuFilter==='intel'?'active':''}" onclick="setBiosCpuFilter('intel')">INTEL</button>
+        </div>
+      </div>`;
+
+      if (s.biosGuideData.length > 0) {
+        const filtered = s.biosGuideData.filter(g => {
+          if (s.biosCpuFilter === "all") return true;
+          return !g.cpuType || g.cpuType === s.biosCpuFilter || g.cpuType === "both";
+        });
+
+        for (const item of filtered) {
+          const impactClass = item.impact === "HIGH" ? "impact-high" : item.impact === "MEDIUM" ? "impact-medium" : "impact-low";
+          html += `<div class="bios-guide-item">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
+              <div style="flex:1">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <span style="font-size:13px;font-weight:600;color:#c4b5fd">${escHtml(item.name || item.setting)}</span>
+                  <span style="font-size:10px;padding:1px 6px;border-radius:3px;background:#0a0a14;color:#888;border:1px solid #1a1a2e">${escHtml(item.category || "General")}</span>
+                  <span class="mono ${impactClass}" style="font-size:10px;font-weight:700">${item.impact || "MEDIUM"}</span>
+                  ${item.safe !== false ? '<span style="font-size:10px;color:#22c55e">\u2705 SAFE</span>' : '<span style="font-size:10px;color:#ef4444">\u26A0 RISKY</span>'}
+                  ${item.cpuType && item.cpuType !== "both" ? `<span style="font-size:10px;padding:1px 6px;border-radius:3px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">${item.cpuType.toUpperCase()}</span>` : ""}
+                </div>
+              </div>
+            </div>
+            <div style="font-size:11px;color:#555;margin-bottom:8px">${escHtml(item.description || "")}</div>
+            <div style="display:flex;gap:16px;font-size:11px;flex-wrap:wrap">
+              <div><span style="color:#555">Where: </span><span style="color:#888">${escHtml(item.location || "BIOS Settings")}</span></div>
+              <div><span style="color:#555">Set to: </span><span class="mono" style="color:#a78bfa">${escHtml(item.value || item.recommended || "Enabled")}</span></div>
+            </div>
+          </div>`;
+        }
+
+        if (filtered.length === 0) {
+          html += `<div style="padding:24px;text-align:center;border-radius:8px;background:#0a0a14;border:1px solid #12121e">
+            <div class="mono" style="color:#333">// no guide items match the current filter</div>
+          </div>`;
+        }
+      } else {
+        html += `<div style="padding:24px;text-align:center;border-radius:8px;background:#0a0a14;border:1px solid #12121e">
+          <div class="mono" style="color:#333">// click REFRESH to load the BIOS optimization guide</div>
+        </div>`;
+      }
+
+      html += `</div>`; // end full-section
+      html += `</div>`; // end bios section
+
+      html += `</div>`; // end main-content
+      html += `</div>`; // end app-body
+
+      // ── Confirmation Overlays ──
+      if (s.debloatConfirm === "nuke") {
+        html += `<div class="confirm-overlay" onclick="cancelConfirm()">
+          <div class="confirm-box" onclick="event.stopPropagation()">
+            <div style="font-size:48px;margin-bottom:12px">\u2622\uFE0F</div>
+            <div style="font-size:18px;font-weight:700;color:#ef4444;margin-bottom:8px">NUCLEAR OPTION</div>
+            <div style="font-size:13px;color:#888;margin-bottom:24px">This will remove ALL bloatware apps, disable ALL unnecessary services, apply ALL telemetry blocks, and ALL performance tweaks. This cannot be undone.</div>
+            <div style="display:flex;gap:12px;justify-content:center">
+              <button onclick="cancelConfirm()" class="action-btn ghost" style="padding:10px 24px">CANCEL</button>
+              <button onclick="debloatFullNuke()" class="action-btn red" style="padding:10px 24px">NUKE EVERYTHING</button>
+            </div>
+          </div>
+        </div>`;
+      }
+
+      if (s.biosConfirm === "reboot") {
+        html += `<div class="confirm-overlay" onclick="cancelConfirm()">
+          <div class="confirm-box" onclick="event.stopPropagation()">
+            <div style="font-size:48px;margin-bottom:12px">\u{1F504}</div>
+            <div style="font-size:18px;font-weight:700;color:#eab308;margin-bottom:8px">REBOOT TO BIOS</div>
+            <div style="font-size:13px;color:#888;margin-bottom:24px">Your PC will restart immediately and boot into BIOS/UEFI settings. Save any open work first.</div>
+            <div style="display:flex;gap:12px;justify-content:center">
+              <button onclick="cancelConfirm()" class="action-btn ghost" style="padding:10px 24px">CANCEL</button>
+              <button onclick="doBiosReboot()" class="action-btn orange" style="padding:10px 24px">REBOOT NOW</button>
+            </div>
+          </div>
+        </div>`;
+      }
+
+      app.innerHTML = html;
+    }
+
+    // ── Init ─────────────────────────────────────────────────────────
+    async function init() {
+      try {
+        state.networkInfo = await window.api.getNetworkInfo();
+        await refreshTunnelStatus();
+        await loadTunnelConfig();
+        if (window.api.updaterStatus) {
+          const us = await window.api.updaterStatus();
+          if (us) state.update = us;
+        }
+      } catch(e) {}
+      render();
+
+      // Preload data for other sections in background
+      setTimeout(async () => {
+        try { await loadDebloatData(); } catch(e) {}
+        try { await loadTweaks(); } catch(e) {}
+        try { await loadHwData(); } catch(e) {}
+        try { await loadBiosData(); } catch(e) {}
+      }, 500);
+    }
+    init();
+  </script>
+</body>
+</html>
