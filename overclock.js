@@ -1283,13 +1283,31 @@ class HardwareMonitor {
   async getStats() {
     if (!this.isWin) return {};
 
-    const [cpuStats, gpuStats, ramStats] = await Promise.all([
+    const [cpuStats, gpuStats, ramStats, hwinfoData] = await Promise.all([
       this.getCPUStats(),
       this.getGPUStats(),
       this.getRAMStats(),
+      this.hwinfo.readSensors().catch(() => ({ available: false })),
     ]);
 
-    return { cpu: cpuStats, gpu: gpuStats, ram: ramStats };
+    // Overlay HWiNFO data for more accurate readings when available
+    if (hwinfoData.available && hwinfoData.sensors) {
+      const s = hwinfoData.sensors;
+      if (s.cpuPackageTemp || s.cpuTemp) cpuStats.temp = s.cpuPackageTemp || s.cpuTemp;
+      if (s.cpuVoltage) cpuStats.voltage = s.cpuVoltage;
+      if (s.cpuClock) cpuStats.clock = s.cpuClock;
+      if (s.cpuPower) cpuStats.power = s.cpuPower;
+      if (s.gpuTemp && s.gpuTemp > 0) gpuStats.temp = s.gpuTemp;
+      if (s.gpuClock) gpuStats.clockCore = s.gpuClock;
+      if (s.gpuMemClock) gpuStats.clockMem = s.gpuMemClock;
+      if (s.gpuLoad) gpuStats.usage = s.gpuLoad;
+      if (s.gpuPower) gpuStats.power = s.gpuPower;
+      if (s.vrmTemp) cpuStats.vrmTemp = s.vrmTemp;
+      if (s.ramTemp) ramStats.temp = s.ramTemp;
+      if (Object.keys(s.fanSpeeds || {}).length > 0) cpuStats.fans = s.fanSpeeds;
+    }
+
+    return { cpu: cpuStats, gpu: gpuStats, ram: ramStats, hwinfoActive: hwinfoData.available };
   }
 
   async getCPUStats() {
