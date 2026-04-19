@@ -801,16 +801,50 @@ class AIOverclockEngine {
     });
 
     // Quick cooling quality test: run a short stress and measure temp delta
-    // ALWAYS use getStats() which overlays HWiNFO sensor data for accurate readings
-    this._log("analyzing", "cooling-test", "Testing cooling solution (15-second stress)...");
-    this._setPhase("analyzing", 10);
+    // Wait for HWiNFO to be confirmed active before reading temps
+    this._log("analyzing", "cooling-test", "Waiting for HWiNFO64 sensors before cooling test...");
+    this._setPhase("analyzing", 8);
 
-    const preStats = await this.hw.getStats();
-    const preTemp = preStats.cpu?.temp || 40;
-    this._log("analyzing", "sensor-source", `Pre-stress temp: ${preTemp}C (source: ${preStats.hwinfoActive ? "HWiNFO64" : "WMI/fallback"})`);
+    // Read temps directly from HWiNFO first — this is the only accurate source
+    let preTemp = -1;
+    let postTemp = -1;
+    let sensorSource = "WMI/fallback";
+
+    // Try HWiNFO directly up to 3 times
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const hwinfoRead = await this.hw.hwinfo.readSensors();
+      if (hwinfoRead.available && hwinfoRead.sensors) {
+        preTemp = hwinfoRead.sensors.cpuPackageTemp || hwinfoRead.sensors.cpuTemp || -1;
+        sensorSource = "HWiNFO64";
+        break;
+      }
+      if (attempt < 2) await new Promise(r => setTimeout(r, 3000)); // wait 3s between retries
+    }
+
+    // Only fall back to WMI if HWiNFO completely failed
+    if (preTemp <= 0) {
+      const wmiStats = await this.hw.getCPUStats();
+      preTemp = (wmiStats.temp > 0) ? wmiStats.temp : 40;
+      sensorSource = (wmiStats.temp > 0) ? "WMI" : "default (no sensor data)";
+    }
+
+    this._log("analyzing", "sensor-source", `Pre-stress temp: ${preTemp}C (source: ${sensorSource})`);
+    this._setPhase("analyzing", 10);
+    this._log("analyzing", "cooling-test", "Running 15-second stress test...");
     await this.hw.runStressTest(15);
-    const postStats = await this.hw.getStats();
-    const postTemp = postStats.cpu?.temp || 50;
+
+    // Read post-stress temp from same source
+    if (sensorSource === "HWiNFO64") {
+      const hwinfoPost = await this.hw.hwinfo.readSensors();
+      if (hwinfoPost.available && hwinfoPost.sensors) {
+        postTemp = hwinfoPost.sensors.cpuPackageTemp || hwinfoPost.sensors.cpuTemp || -1;
+      }
+    }
+    if (postTemp <= 0) {
+      const wmiPost = await this.hw.getCPUStats();
+      postTemp = (wmiPost.temp > 0) ? wmiPost.temp : 50;
+    }
+
     const tempDelta = postTemp - preTemp;
 
     if (tempDelta < 10) {
