@@ -1643,6 +1643,31 @@ class HardwareMonitor {
 
   // ── SceWin / AI Overclock Integration ─────────────────────────────
 
+  // ── Stress Test ──────────────────────────────────────────────────
+
+  async runStressTest(durationSeconds = 10) {
+    // Run a CPU stress test using PowerShell multi-threaded math
+    const threads = os.cpus().length;
+    const psCmd = `
+      $duration = ${durationSeconds}
+      $jobs = @()
+      for ($i = 0; $i -lt ${threads}; $i++) {
+        $jobs += Start-Job -ScriptBlock {
+          $end = (Get-Date).AddSeconds($using:duration)
+          while ((Get-Date) -lt $end) {
+            [math]::Sqrt([math]::PI) | Out-Null
+            [math]::Pow(2, 64) | Out-Null
+          }
+        }
+      }
+      $jobs | Wait-Job -Timeout ($duration + 5) | Out-Null
+      $jobs | Remove-Job -Force
+      Write-Output "STRESS_COMPLETE"
+    `;
+    const result = await runPS(psCmd, (durationSeconds + 15) * 1000);
+    return { success: result.output.includes("STRESS_COMPLETE"), duration: durationSeconds };
+  }
+
   // ── HWiNFO64 Integration ─────────────────────────────────────────
 
   getHwinfoStatus() {
