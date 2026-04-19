@@ -416,16 +416,43 @@ class SceWinManager {
     if (!exported.success) return exported;
 
     const s = this.currentSettings;
+    const allNames = Object.keys(s);
+
+    // Fuzzy find helper: search all setting names for any keyword match
+    const fuzzyGet = (keywords, ...hardcoded) => {
+      // Try hardcoded names first
+      for (const name of hardcoded) {
+        if (s[name]) return s[name];
+      }
+      // Then fuzzy search
+      for (const name of allNames) {
+        const lower = name.toLowerCase();
+        for (const kw of keywords) {
+          if (lower.includes(kw.toLowerCase())) return s[name];
+        }
+      }
+      return null;
+    };
+
     const cpuSettings = {
-      cpuRatio: s["CPU Ratio"] || s["CPU Core Ratio"] || s["Core Ratio Limit"] || null,
-      cpuVoltage: s["CPU Core Voltage"] || s["CPU Vcore"] || s["Vcore Override"] || null,
-      cpuVoltageMode: s["CPU Core Voltage Mode"] || s["Vcore Mode"] || null,
-      powerLimit1: s["Long Duration Power Limit"] || s["PL1"] || s["Package Power Limit 1"] || null,
-      powerLimit2: s["Short Duration Power Limit"] || s["PL2"] || s["Package Power Limit 2"] || null,
-      tccOffset: s["TCC Activation Offset"] || null,
-      ringRatio: s["Ring Ratio"] || s["Cache Ratio"] || s["Uncore Ratio"] || null,
-      iccMax: s["ICC Max"] || s["IA AC Load Line"] || null,
-      avxOffset: s["AVX Offset"] || s["AVX2 Ratio Offset"] || null,
+      cpuRatio: fuzzyGet(["ratio", "multiplier", "core ratio", "all core", "cpu ratio", "frequency ratio"],
+        "CPU Ratio", "CPU Core Ratio", "Core Ratio Limit"),
+      cpuVoltage: fuzzyGet(["vcore", "cpu voltage", "core voltage", "cpu v", "vid"],
+        "CPU Core Voltage", "CPU Vcore", "Vcore Override"),
+      cpuVoltageMode: fuzzyGet(["voltage mode", "vcore mode"],
+        "CPU Core Voltage Mode", "Vcore Mode"),
+      powerLimit1: fuzzyGet(["long duration power limit", "pl1", "package power limit 1", "power limit 1", "long duration", "tdp"],
+        "Long Duration Power Limit", "PL1", "Package Power Limit 1"),
+      powerLimit2: fuzzyGet(["short duration power limit", "pl2", "package power limit 2", "power limit 2", "short duration"],
+        "Short Duration Power Limit", "PL2", "Package Power Limit 2"),
+      tccOffset: fuzzyGet(["tcc", "activation offset"],
+        "TCC Activation Offset"),
+      ringRatio: fuzzyGet(["ring ratio", "cache ratio", "uncore ratio", "ring", "cache", "uncore"],
+        "Ring Ratio", "Cache Ratio", "Uncore Ratio"),
+      iccMax: fuzzyGet(["icc max", "ia ac load line", "icc"],
+        "ICC Max", "IA AC Load Line"),
+      avxOffset: fuzzyGet(["avx offset", "avx2 ratio offset", "avx"],
+        "AVX Offset", "AVX2 Ratio Offset"),
     };
 
     return { success: true, settings: cpuSettings };
@@ -440,15 +467,41 @@ class SceWinManager {
     if (!exported.success) return exported;
 
     const s = this.currentSettings;
+    const allNames = Object.keys(s);
+
+    // Fuzzy find helper: search all setting names for any keyword match
+    const fuzzyGet = (keywords, ...hardcoded) => {
+      // Try hardcoded names first
+      for (const name of hardcoded) {
+        if (s[name]) return s[name];
+      }
+      // Then fuzzy search
+      for (const name of allNames) {
+        const lower = name.toLowerCase();
+        for (const kw of keywords) {
+          if (lower.includes(kw.toLowerCase())) return s[name];
+        }
+      }
+      return null;
+    };
+
     const memSettings = {
-      memorySpeed: s["Memory Frequency"] || s["DRAM Frequency"] || s["Memory Speed"] || null,
-      casLatency: s["CAS Latency"] || s["tCL"] || s["CAS# Latency"] || null,
-      tRCD: s["tRCD"] || s["RAS to CAS Delay"] || s["RAS# to CAS# Delay"] || null,
-      tRP: s["tRP"] || s["Row Precharge Time"] || s["RAS# Precharge"] || null,
-      tRAS: s["tRAS"] || s["RAS Active Time"] || s["Active to Precharge Delay"] || null,
-      xmpProfile: s["XMP Profile"] || s["Extreme Memory Profile"] || s["XMP"] || null,
-      memoryVoltage: s["DRAM Voltage"] || s["Memory Voltage"] || null,
-      commandRate: s["Command Rate"] || s["CR"] || s["Cmd Rate"] || null,
+      memorySpeed: fuzzyGet(["memory frequency", "dram frequency", "memory speed", "mem freq"],
+        "Memory Frequency", "DRAM Frequency", "Memory Speed"),
+      casLatency: fuzzyGet(["cas latency", "tcl", "cas#"],
+        "CAS Latency", "tCL", "CAS# Latency"),
+      tRCD: fuzzyGet(["trcd", "ras to cas"],
+        "tRCD", "RAS to CAS Delay", "RAS# to CAS# Delay"),
+      tRP: fuzzyGet(["trp", "row precharge", "ras# precharge"],
+        "tRP", "Row Precharge Time", "RAS# Precharge"),
+      tRAS: fuzzyGet(["tras", "ras active", "active to precharge"],
+        "tRAS", "RAS Active Time", "Active to Precharge Delay"),
+      xmpProfile: fuzzyGet(["xmp", "memory profile", "expo", "docp"],
+        "XMP Profile", "Extreme Memory Profile", "XMP"),
+      memoryVoltage: fuzzyGet(["dram voltage", "memory voltage", "dram v"],
+        "DRAM Voltage", "Memory Voltage"),
+      commandRate: fuzzyGet(["command rate", "cmd rate"],
+        "Command Rate", "CR", "Cmd Rate"),
     };
 
     return { success: true, settings: memSettings };
@@ -456,13 +509,22 @@ class SceWinManager {
 
   // ── Apply CPU Multiplier ──────────────────────────────────────────
 
-  async applyCpuMultiplier(ratio) {
+  async applyCpuMultiplier(ratio, discoveredName) {
     if (!this.available) return { success: false, error: "SceWin not found" };
     if (typeof ratio !== "number" || ratio < 10 || ratio > 80) {
       return { success: false, error: `Invalid CPU ratio: ${ratio}. Must be between 10 and 80.` };
     }
 
-    // Try common BIOS setting names for CPU multiplier
+    // Use the discovered BIOS setting name if provided (from _discoverBiosSettings)
+    if (discoveredName) {
+      const result = await this.readSetting(discoveredName);
+      if (result.success) {
+        return await this.writeSetting(discoveredName, ratio);
+      }
+      return { success: false, error: `Discovered CPU ratio setting "${discoveredName}" could not be read: ${result.error}` };
+    }
+
+    // Fallback: try common BIOS setting names for CPU multiplier
     const names = ["CPU Ratio", "CPU Core Ratio", "Core Ratio Limit", "All Core Ratio Limit"];
     for (const name of names) {
       const result = await this.readSetting(name);
@@ -471,12 +533,12 @@ class SceWinManager {
       }
     }
 
-    return { success: false, error: "Could not find CPU ratio setting in BIOS. Setting name may vary by motherboard." };
+    return { success: false, error: "Could not find CPU ratio setting in BIOS. Run BIOS discovery first or check motherboard compatibility." };
   }
 
   // ── Apply CPU Voltage ─────────────────────────────────────────────
 
-  async applyCpuVoltage(voltage) {
+  async applyCpuVoltage(voltage, discoveredName) {
     if (!this.available) return { success: false, error: "SceWin not found" };
 
     // Hard safety limits
@@ -489,6 +551,16 @@ class SceWinManager {
     // Convert voltage to millivolts (common BIOS representation)
     const millivolts = Math.round(voltage * 1000);
 
+    // Use the discovered BIOS setting name if provided (from _discoverBiosSettings)
+    if (discoveredName) {
+      const result = await this.readSetting(discoveredName);
+      if (result.success) {
+        return await this.writeSetting(discoveredName, millivolts);
+      }
+      return { success: false, error: `Discovered CPU voltage setting "${discoveredName}" could not be read: ${result.error}` };
+    }
+
+    // Fallback: try common BIOS setting names
     const names = ["CPU Core Voltage", "CPU Vcore", "Vcore Override", "CPU Core Voltage Override"];
     for (const name of names) {
       const result = await this.readSetting(name);
@@ -497,17 +569,27 @@ class SceWinManager {
       }
     }
 
-    return { success: false, error: "Could not find CPU voltage setting in BIOS. Setting name may vary by motherboard." };
+    return { success: false, error: "Could not find CPU voltage setting in BIOS. Run BIOS discovery first or check motherboard compatibility." };
   }
 
   // ── Apply Memory XMP ──────────────────────────────────────────────
 
-  async applyMemoryXMP(profile) {
+  async applyMemoryXMP(profile, discoveredName) {
     if (!this.available) return { success: false, error: "SceWin not found" };
-    if (profile !== 1 && profile !== 2) {
-      return { success: false, error: `Invalid XMP profile: ${profile}. Must be 1 or 2.` };
+    if (profile !== 0 && profile !== 1 && profile !== 2) {
+      return { success: false, error: `Invalid XMP profile: ${profile}. Must be 0, 1, or 2.` };
     }
 
+    // Use the discovered BIOS setting name if provided (from _discoverBiosSettings)
+    if (discoveredName) {
+      const result = await this.readSetting(discoveredName);
+      if (result.success) {
+        return await this.writeSetting(discoveredName, profile);
+      }
+      return { success: false, error: `Discovered XMP setting "${discoveredName}" could not be read: ${result.error}` };
+    }
+
+    // Fallback: try common BIOS setting names
     const names = ["XMP Profile", "Extreme Memory Profile", "XMP", "Memory Profile"];
     for (const name of names) {
       const result = await this.readSetting(name);
@@ -516,7 +598,7 @@ class SceWinManager {
       }
     }
 
-    return { success: false, error: "Could not find XMP profile setting in BIOS." };
+    return { success: false, error: "Could not find XMP profile setting in BIOS. Run BIOS discovery first or check motherboard compatibility." };
   }
 
   // ── Backup / Restore ──────────────────────────────────────────────
@@ -779,25 +861,81 @@ class AIOverclockEngine {
       const name = (hw.cpu.name || "").toUpperCase();
       // Intel K/KF/KS/X series are unlocked
       analysis.cpuUnlocked = /\d{4,5}(K|KF|KS|X|HX)\b/.test(name);
-      // Estimate base ratio from MaxClockSpeed
-      analysis.baseRatio = hw.cpu.maxClock ? Math.round(hw.cpu.maxClock / 100) : 36;
-      // Max turbo is typically 1-5 multipliers above base
-      analysis.maxTurboRatio = analysis.baseRatio + 5;
-      // Safe ceiling: turbo + 3 for K-series (conservative)
-      analysis.safeCeilingRatio = analysis.cpuUnlocked ? analysis.maxTurboRatio + 3 : analysis.baseRatio;
       analysis.safeCeilingVoltage = 1.40;
     } else if (analysis.isAMD) {
       const name = (hw.cpu.name || "").toUpperCase();
       // All Ryzen processors are unlocked
       analysis.cpuUnlocked = name.includes("RYZEN");
+      analysis.safeCeilingVoltage = 1.35; // AMD is more voltage-sensitive
+    }
+
+    // Discover actual BIOS setting names via fuzzy matching
+    await this._discoverBiosSettings();
+
+    // Read ACTUAL current multiplier from BIOS via discovered setting name
+    let biosRatio = null;
+    let biosVoltage = null;
+    if (this.scewin.available && this.biosMap) {
+      if (this.biosMap.cpuRatio) {
+        const ratioRead = await this.scewin.readSetting(this.biosMap.cpuRatio);
+        if (ratioRead.success) {
+          biosRatio = parseInt(ratioRead.value, 16);
+          if (isNaN(biosRatio) || biosRatio < 10 || biosRatio > 80) biosRatio = null;
+          this._log("analyzing", "bios-ratio", `Current BIOS CPU ratio from "${this.biosMap.cpuRatio}": x${biosRatio} (raw: ${ratioRead.value})`);
+        }
+      }
+      if (this.biosMap.cpuVoltage) {
+        const voltRead = await this.scewin.readSetting(this.biosMap.cpuVoltage);
+        if (voltRead.success) {
+          const rawVolt = parseInt(voltRead.value, 16);
+          // Interpret as millivolts if > 100, else as raw ratio
+          biosVoltage = rawVolt > 100 ? rawVolt / 1000 : null;
+          this._log("analyzing", "bios-voltage", `Current BIOS CPU voltage from "${this.biosMap.cpuVoltage}": ${biosVoltage}V (raw: ${voltRead.value})`);
+        }
+      }
+    }
+
+    // Read actual temps, clocks, and power from HWiNFO sensors
+    let hwinfoClockMHz = null;
+    let hwinfoCpuTemp = null;
+    let hwinfoCpuPower = null;
+    const hwinfoSensors = await this.hw.hwinfo.readSensors();
+    if (hwinfoSensors.available && hwinfoSensors.sensors) {
+      hwinfoCpuTemp = hwinfoSensors.sensors.cpuPackageTemp || hwinfoSensors.sensors.cpuTemp || null;
+      hwinfoClockMHz = hwinfoSensors.sensors.cpuClock || null;
+      hwinfoCpuPower = hwinfoSensors.sensors.cpuPower || null;
+      this._log("analyzing", "hwinfo-live", `HWiNFO live readings — Temp: ${hwinfoCpuTemp}C | Clock: ${hwinfoClockMHz} MHz | Power: ${hwinfoCpuPower}W`);
+    }
+
+    // Determine base ratio: prefer BIOS reading, then HWiNFO clock, then WMI estimate
+    if (biosRatio && biosRatio >= 10 && biosRatio <= 80) {
+      analysis.baseRatio = biosRatio;
+      this._log("analyzing", "ratio-source", `Using BIOS-reported CPU ratio: x${biosRatio}`);
+    } else if (hwinfoClockMHz && hwinfoClockMHz > 500) {
+      analysis.baseRatio = Math.round(hwinfoClockMHz / 100);
+      this._log("analyzing", "ratio-source", `Using HWiNFO clock-derived ratio: x${analysis.baseRatio} (from ${hwinfoClockMHz} MHz)`);
+    } else {
       analysis.baseRatio = hw.cpu.maxClock ? Math.round(hw.cpu.maxClock / 100) : 36;
+      this._log("analyzing", "ratio-source", `Using WMI-estimated ratio: x${analysis.baseRatio} (from MaxClockSpeed ${hw.cpu.maxClock} MHz)`);
+    }
+
+    // Set turbo and ceiling based on detected base ratio
+    if (analysis.isIntel) {
+      analysis.maxTurboRatio = analysis.baseRatio + 5;
+      analysis.safeCeilingRatio = analysis.cpuUnlocked ? analysis.maxTurboRatio + 3 : analysis.baseRatio;
+    } else if (analysis.isAMD) {
       analysis.maxTurboRatio = analysis.baseRatio + 4;
       analysis.safeCeilingRatio = analysis.cpuUnlocked ? analysis.maxTurboRatio + 2 : analysis.baseRatio;
-      analysis.safeCeilingVoltage = 1.35; // AMD is more voltage-sensitive
+    }
+
+    // Store actual voltage if we read one
+    if (biosVoltage) {
+      analysis.currentVoltage = biosVoltage;
     }
 
     this._log("analyzing", "cpu-info", `CPU: ${hw.cpu.name} | Unlocked: ${analysis.cpuUnlocked} | Base ratio: ${analysis.baseRatio} | Safe ceiling: ${analysis.safeCeilingRatio}`, {
       unlocked: analysis.cpuUnlocked, baseRatio: analysis.baseRatio, ceiling: analysis.safeCeilingRatio,
+      biosRatio, biosVoltage, hwinfoCpuTemp, hwinfoClockMHz, hwinfoCpuPower,
     });
 
     // Quick cooling quality test: run a short stress and measure temp delta
@@ -810,15 +948,22 @@ class AIOverclockEngine {
     let postTemp = -1;
     let sensorSource = "WMI/fallback";
 
-    // Try HWiNFO directly up to 3 times
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // Try HWiNFO directly up to 5 times with 4s waits (20s total max)
+    // HWiNFO VSB registry can take 15-20s to populate after launch
+    for (let attempt = 0; attempt < 5; attempt++) {
       const hwinfoRead = await this.hw.hwinfo.readSensors();
       if (hwinfoRead.available && hwinfoRead.sensors) {
-        preTemp = hwinfoRead.sensors.cpuPackageTemp || hwinfoRead.sensors.cpuTemp || -1;
-        sensorSource = "HWiNFO64";
-        break;
+        const temp = hwinfoRead.sensors.cpuPackageTemp || hwinfoRead.sensors.cpuTemp || -1;
+        if (temp > 0) {
+          preTemp = temp;
+          sensorSource = "HWiNFO64";
+          break;
+        }
       }
-      if (attempt < 2) await new Promise(r => setTimeout(r, 3000)); // wait 3s between retries
+      if (attempt < 4) {
+        this._log("analyzing", "hwinfo-retry", `HWiNFO sensor read attempt ${attempt + 1}/5 — no temp data yet, waiting 4s...`);
+        await new Promise(r => setTimeout(r, 4000));
+      }
     }
 
     // Only fall back to WMI if HWiNFO completely failed
@@ -885,18 +1030,46 @@ class AIOverclockEngine {
       return null;
     }
 
+    // Check that we have discovered BIOS setting names
+    const ratioSettingName = this.biosMap && this.biosMap.cpuRatio ? this.biosMap.cpuRatio : null;
+    const voltageSettingName = this.biosMap && this.biosMap.cpuVoltage ? this.biosMap.cpuVoltage : null;
+
+    if (!ratioSettingName) {
+      this._log("testing", "skip-cpu", "BIOS discovery did not find a CPU ratio setting — cannot safely overclock CPU. Check SceWin export for your motherboard's setting names.");
+      return null;
+    }
+
     this._setPhase("testing", 20);
-    this._log("testing", "cpu-start", "Starting CPU overclock phase");
+    this._log("testing", "cpu-start", `Starting CPU overclock phase (ratio setting: "${ratioSettingName}"${voltageSettingName ? `, voltage setting: "${voltageSettingName}"` : ", voltage setting: NOT FOUND"})`);
 
     // Backup current settings
     await this.scewin.backupSettings();
     this._log("testing", "backup", "BIOS settings backed up");
 
-    const startRatio = analysis.baseRatio;
+    // Read ACTUAL current ratio from BIOS via discovered setting name
+    let startRatio = analysis.baseRatio;
+    const currentRatioRead = await this.scewin.readSetting(ratioSettingName);
+    if (currentRatioRead.success) {
+      const parsedRatio = parseInt(currentRatioRead.value, 16);
+      if (!isNaN(parsedRatio) && parsedRatio >= 10 && parsedRatio <= 80) {
+        startRatio = parsedRatio;
+        this._log("testing", "cpu-current", `Read current CPU ratio from BIOS "${ratioSettingName}": x${startRatio} (raw: ${currentRatioRead.value})`);
+      } else {
+        this._log("testing", "cpu-current-fallback", `BIOS ratio "${ratioSettingName}" returned unparseable value (${currentRatioRead.value}), using analysis base: x${startRatio}`);
+      }
+    } else {
+      this._log("testing", "cpu-current-fallback", `Could not read current ratio from "${ratioSettingName}", using analysis base: x${startRatio}`);
+    }
+
     const maxRatio = analysis.safeCeilingRatio;
     let lastGoodRatio = startRatio;
     let lastGoodVoltage = null;
     const totalSteps = maxRatio - startRatio;
+
+    if (totalSteps <= 0) {
+      this._log("testing", "cpu-at-ceiling", `Current ratio x${startRatio} is already at or above safe ceiling x${maxRatio} — no overclock headroom`);
+      return { finalRatio: startRatio, finalVoltage: null, finalMHz: startRatio * 100, gainMHz: 0 };
+    }
 
     for (let ratio = startRatio + 1; ratio <= maxRatio; ratio++) {
       if (this._stopRequested) break;
@@ -908,8 +1081,8 @@ class AIOverclockEngine {
         clock: ratio * 100, voltage: lastGoodVoltage,
       });
 
-      // Apply the multiplier
-      const applyResult = await this.scewin.applyCpuMultiplier(ratio);
+      // Apply the multiplier using discovered BIOS setting name
+      const applyResult = await this.scewin.applyCpuMultiplier(ratio, ratioSettingName);
       if (!applyResult.success) {
         this._log("testing", "cpu-apply-error", `Failed to apply ratio x${ratio}: ${applyResult.error}`);
         break;
@@ -931,6 +1104,12 @@ class AIOverclockEngine {
           stable: false, temp: result.maxTemp, errors: result.errors,
         });
 
+        if (!voltageSettingName) {
+          this._log("testing", "cpu-no-voltage", "No voltage setting discovered — cannot adjust voltage, rolling back");
+          await this.scewin.applyCpuMultiplier(lastGoodRatio, ratioSettingName);
+          break;
+        }
+
         // Try increasing voltage slightly
         let voltageFixed = false;
         const baseVoltage = analysis.isAMD ? 1.20 : 1.25;
@@ -942,7 +1121,7 @@ class AIOverclockEngine {
           const vRounded = Math.round(v * 100) / 100;
           this._log("testing", "cpu-voltage", `Trying voltage ${vRounded}V at x${ratio}`, { voltage: vRounded });
 
-          const vResult = await this.scewin.applyCpuVoltage(vRounded);
+          const vResult = await this.scewin.applyCpuVoltage(vRounded, voltageSettingName);
           if (!vResult.success) continue;
 
           const vStress = await this.runExtendedStressTest(10, { maxTemp: 95 });
@@ -959,8 +1138,8 @@ class AIOverclockEngine {
 
         if (!voltageFixed) {
           this._log("testing", "cpu-rollback", `Rolling back to last good: x${lastGoodRatio}`, { clock: lastGoodRatio * 100 });
-          await this.scewin.applyCpuMultiplier(lastGoodRatio);
-          if (lastGoodVoltage) await this.scewin.applyCpuVoltage(lastGoodVoltage);
+          await this.scewin.applyCpuMultiplier(lastGoodRatio, ratioSettingName);
+          if (lastGoodVoltage) await this.scewin.applyCpuVoltage(lastGoodVoltage, voltageSettingName);
           break;
         }
       }
@@ -992,11 +1171,14 @@ class AIOverclockEngine {
       return null;
     }
 
+    // Use discovered XMP setting name if available
+    const xmpSettingName = this.biosMap && this.biosMap.xmpProfile ? this.biosMap.xmpProfile : null;
+
     // Try enabling XMP if not already enabled
     const xmpSetting = memSettings.settings.xmpProfile;
     if (xmpSetting && (xmpSetting.value === "0x0" || xmpSetting.value === "0x00")) {
-      this._log("testing", "mem-xmp", "XMP is disabled — enabling XMP Profile 1");
-      const xmpResult = await this.scewin.applyMemoryXMP(1);
+      this._log("testing", "mem-xmp", `XMP is disabled — enabling XMP Profile 1${xmpSettingName ? ` via discovered setting "${xmpSettingName}"` : ""}`);
+      const xmpResult = await this.scewin.applyMemoryXMP(1, xmpSettingName);
       if (xmpResult.success) {
         this._log("testing", "mem-xmp-applied", "XMP Profile 1 enabled");
 
@@ -1009,7 +1191,7 @@ class AIOverclockEngine {
           return { xmpEnabled: true, stable: true };
         } else {
           this._log("testing", "mem-unstable", "Memory UNSTABLE with XMP — rolling back");
-          await this.scewin.applyMemoryXMP(0);
+          await this.scewin.applyMemoryXMP(0, xmpSettingName);
           return { xmpEnabled: false, stable: false, errors: memStress.errors };
         }
       }
@@ -1115,14 +1297,33 @@ class AIOverclockEngine {
     this.scewin.redetect();
     this.hw.hwinfo.redetect();
 
-    // Force-launch HWiNFO and enable shared memory so we get accurate sensor data
+    // Launch HWiNFO EARLY — sensor registry (VSB) needs 15-20s to populate after launch
+    this._log("analyzing", "hwinfo-early", "Launching HWiNFO64 early so sensors have time to populate...");
     const hwinfoLaunch = await this.hw.hwinfo.ensureRunning();
     if (hwinfoLaunch.error) {
       this._log("analyzing", "hwinfo-warn", `HWiNFO64 not available: ${hwinfoLaunch.error} — will use WMI fallback (less accurate)`);
     } else if (hwinfoLaunch.launched) {
-      this._log("analyzing", "hwinfo-launched", `HWiNFO64 auto-launched from ${hwinfoLaunch.path} — using accurate sensor data`);
+      this._log("analyzing", "hwinfo-launched", `HWiNFO64 auto-launched from ${hwinfoLaunch.path} — waiting for VSB registry to populate...`);
     } else if (hwinfoLaunch.alreadyRunning) {
-      this._log("analyzing", "hwinfo-ok", "HWiNFO64 already running — using accurate sensor data");
+      this._log("analyzing", "hwinfo-ok", "HWiNFO64 already running — verifying VSB sensor data...");
+    }
+
+    // Wait up to 20 seconds for VSB to be populated with actual sensor data
+    if (!hwinfoLaunch.error) {
+      let vsbReady = false;
+      for (let i = 0; i < 20; i++) {
+        const sensorCheck = await this.hw.hwinfo.readSensors();
+        if (sensorCheck.available && sensorCheck.sensors &&
+            (sensorCheck.sensors.cpuPackageTemp || sensorCheck.sensors.cpuTemp)) {
+          vsbReady = true;
+          this._log("analyzing", "hwinfo-ready", `HWiNFO64 VSB sensors confirmed populated after ${i + 1}s — accurate sensor data available`);
+          break;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      if (!vsbReady) {
+        this._log("analyzing", "hwinfo-slow", "HWiNFO64 VSB sensors not yet populated after 20s — will retry during analysis, may fall back to WMI");
+      }
     }
 
     this._log("analyzing", "start", `AI Auto-Overclock starting... SceWin: ${this.scewin.available ? "FOUND at " + this.scewin.scewinPath : "not found (GPU-only mode)"} | HWiNFO: ${this.hw.hwinfo.available ? "ACTIVE" : "not detected"}`);
@@ -1223,6 +1424,93 @@ class AIOverclockEngine {
       this.running = false;
       return { success: false, error: e.message, log: this.log };
     }
+  }
+
+  // ── BIOS Setting Discovery ─────────────────────────────────────────
+
+  async _discoverBiosSettings() {
+    this.biosMap = {
+      cpuRatio: null,
+      cpuVoltage: null,
+      xmpProfile: null,
+      pl1: null,
+      pl2: null,
+      ringRatio: null,
+    };
+
+    if (!this.scewin.available) {
+      this._log("analyzing", "bios-discovery", "SceWin not available — skipping BIOS setting discovery");
+      return this.biosMap;
+    }
+
+    this._log("analyzing", "bios-discovery", "Exporting all BIOS settings via SceWin for discovery...");
+    const exported = await this.scewin.exportCurrentSettings();
+    if (!exported.success) {
+      this._log("analyzing", "bios-discovery-fail", "Failed to export BIOS settings: " + exported.error);
+      return this.biosMap;
+    }
+
+    const allNames = Object.keys(exported.settings);
+    this._log("analyzing", "bios-discovery", `Exported ${allNames.length} BIOS settings — running fuzzy match`);
+
+    // Fuzzy keyword matching helper: returns the first setting name that matches any keyword
+    const fuzzyFind = (keywords) => {
+      for (const name of allNames) {
+        const lower = name.toLowerCase();
+        for (const kw of keywords) {
+          if (lower.includes(kw.toLowerCase())) return name;
+        }
+      }
+      return null;
+    };
+
+    // CPU ratio / multiplier
+    this.biosMap.cpuRatio = fuzzyFind([
+      "all core ratio", "cpu ratio", "core ratio limit", "cpu core ratio",
+      "frequency ratio", "multiplier", "ratio",
+    ]);
+
+    // CPU voltage
+    this.biosMap.cpuVoltage = fuzzyFind([
+      "vcore override", "cpu vcore", "cpu core voltage", "core voltage",
+      "vcore", "cpu voltage", "cpu v", "vid",
+    ]);
+
+    // XMP / memory profile
+    this.biosMap.xmpProfile = fuzzyFind([
+      "xmp profile", "extreme memory profile", "xmp", "memory profile",
+      "expo", "docp",
+    ]);
+
+    // Power limit 1 (long duration)
+    this.biosMap.pl1 = fuzzyFind([
+      "long duration power limit", "pl1", "package power limit 1",
+      "power limit 1", "long duration", "tdp",
+    ]);
+
+    // Power limit 2 (short duration)
+    this.biosMap.pl2 = fuzzyFind([
+      "short duration power limit", "pl2", "package power limit 2",
+      "power limit 2", "short duration",
+    ]);
+
+    // Ring / cache / uncore ratio
+    this.biosMap.ringRatio = fuzzyFind([
+      "ring ratio", "cache ratio", "uncore ratio", "ring", "cache", "uncore",
+    ]);
+
+    const found = Object.entries(this.biosMap)
+      .filter(([, v]) => v !== null)
+      .map(([k, v]) => `${k}="${v}"`)
+      .join(", ");
+    const missing = Object.entries(this.biosMap)
+      .filter(([, v]) => v === null)
+      .map(([k]) => k)
+      .join(", ");
+
+    this._log("analyzing", "bios-discovery-result", `Discovered BIOS names: ${found || "(none)"}${missing ? " | Missing: " + missing : ""}`);
+
+    return this.biosMap;
   }
 
   // ── Summary Report ────────────────────────────────────────────────
