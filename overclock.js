@@ -650,7 +650,8 @@ class AIOverclockEngine {
         // Log progress every 60 seconds
         if ((i + 1) % (60 / monitorInterval) === 0) {
           const elapsed = (i + 1) * monitorInterval;
-          this._log("testing", "monitor", `Stress test ${Math.round(elapsed / 60)}/${durationMinutes} min — CPU ${cpuTemp}C`, { cpuTemp, gpuTemp, elapsed });
+          const source = stats.hwinfoActive ? "HWiNFO" : "WMI";
+          this._log("testing", "monitor", `Stress test ${Math.round(elapsed / 60)}/${durationMinutes} min — CPU ${cpuTemp}C | GPU ${gpuTemp}C [${source}]`, { cpuTemp, gpuTemp, elapsed, source });
         }
       } catch (e) {
         errors.push(`Monitor error at ${(i + 1) * monitorInterval}s: ${e.message}`);
@@ -729,12 +730,16 @@ class AIOverclockEngine {
     });
 
     // Quick cooling quality test: run a short stress and measure temp delta
+    // ALWAYS use getStats() which overlays HWiNFO sensor data for accurate readings
     this._log("analyzing", "cooling-test", "Testing cooling solution (15-second stress)...");
     this._setPhase("analyzing", 10);
 
-    const preTemp = (await this.hw.getCPUStats()).temp || 40;
+    const preStats = await this.hw.getStats();
+    const preTemp = preStats.cpu?.temp || 40;
+    this._log("analyzing", "sensor-source", `Pre-stress temp: ${preTemp}C (source: ${preStats.hwinfoActive ? "HWiNFO64" : "WMI/fallback"})`);
     await this.hw.runStressTest(15);
-    const postTemp = (await this.hw.getCPUStats()).temp || 50;
+    const postStats = await this.hw.getStats();
+    const postTemp = postStats.cpu?.temp || 50;
     const tempDelta = postTemp - preTemp;
 
     if (tempDelta < 10) {
@@ -940,17 +945,19 @@ class AIOverclockEngine {
       await this.hw.gpuSetPowerLimit(newLimit);
 
       // Quick GPU stress test (5 minutes per step)
+      // Use getStats() which overlays HWiNFO sensor data for accurate GPU temps
       const result = await this.runExtendedStressTest(5, { maxTemp, stressGpu: true });
-      const gpuStats = await this.hw.getGPUStats();
+      const fullStats = await this.hw.getStats();
+      const gpuTemp = fullStats.gpu?.temp || 0;
 
-      if (result.stable && (gpuStats.temp || 0) < maxTemp) {
+      if (result.stable && gpuTemp < maxTemp) {
         lastGoodLimit = newLimit;
-        this._log("testing", "gpu-stable", `${newLimit}W is STABLE (GPU temp: ${gpuStats.temp}C)`, {
-          stable: true, temp: gpuStats.temp, power: newLimit,
+        this._log("testing", "gpu-stable", `${newLimit}W is STABLE (GPU temp: ${gpuTemp}C, source: ${fullStats.hwinfoActive ? "HWiNFO64" : "nvidia-smi"})`, {
+          stable: true, temp: gpuTemp, power: newLimit,
         });
       } else {
         this._log("testing", "gpu-rollback", `${newLimit}W unstable or too hot — rolling back to ${lastGoodLimit}W`, {
-          stable: false, temp: gpuStats.temp,
+          stable: false, temp: gpuTemp,
         });
         await this.hw.gpuSetPowerLimit(lastGoodLimit);
         break;
@@ -999,9 +1006,10 @@ class AIOverclockEngine {
     this.stableSettings = null;
     this.currentProfile = null;
 
-    // Re-detect SceWin in case it was installed since app launch
+    // Re-detect SceWin and HWiNFO in case they were installed since app launch
     this.scewin.redetect();
-    this._log("analyzing", "start", `AI Auto-Overclock starting... SceWin: ${this.scewin.available ? "FOUND at " + this.scewin.scewinPath : "not found (GPU-only mode)"}`);
+    this.hw.hwinfo.redetect();
+    this._log("analyzing", "start", `AI Auto-Overclock starting... SceWin: ${this.scewin.available ? "FOUND at " + this.scewin.scewinPath : "not found (GPU-only mode)"} | HWiNFO: ${this.hw.hwinfo.available ? "ACTIVE" : "not detected"}`);
 
     try {
       // Phase 1: Analyze hardware
