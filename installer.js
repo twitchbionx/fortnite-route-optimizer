@@ -264,15 +264,71 @@ class DependencyManager {
   // ── SceWin (AMISCE) ─────────────────────────────────────────────
   async checkSceWin() {
     const scewinDir = path.join(os.homedir(), ".fn-optimizer", "scewin");
+    const home = os.homedir();
     const paths = [
+      // Our install dir
       path.join(scewinDir, "SCEWNX64.exe"),
       path.join(scewinDir, "scewin_64.exe"),
+      path.join(scewinDir, "SCEWIN_64.exe"),
+      // Subdirs of our install dir
+      path.join(scewinDir, "SCEWIN", "SCEWNX64.exe"),
+      path.join(scewinDir, "AMISCE", "SCEWNX64.exe"),
+      // App tools dir
       path.join(__dirname, "tools", "SCEWNX64.exe"),
+      // Downloads dir (where DL_SCEWIN.exe runs)
+      path.join(DOWNLOADS_DIR, "SCEWNX64.exe"),
+      path.join(DOWNLOADS_DIR, "SCEWIN_64.exe"),
+      path.join(DOWNLOADS_DIR, "SCEWIN", "SCEWNX64.exe"),
+      // User's Downloads folder
+      path.join(home, "Downloads", "SCEWNX64.exe"),
+      path.join(home, "Downloads", "SCEWIN", "SCEWNX64.exe"),
+      path.join(home, "Downloads", "SCEWIN_64.exe"),
+      // Desktop
+      path.join(home, "Desktop", "SCEWNX64.exe"),
+      path.join(home, "Desktop", "SCEWIN", "SCEWNX64.exe"),
+      // Common system locations
+      path.join(home, "SCEWIN", "SCEWNX64.exe"),
+      "C:\\SCEWIN\\SCEWNX64.exe",
       "C:\\SCEWNX64.exe",
     ];
 
     for (const p of paths) {
-      try { if (fs.existsSync(p)) return { installed: true, path: p, name: "SceWin (AMISCE)", id: "scewin" }; } catch(e) {}
+      try {
+        if (fs.existsSync(p)) {
+          // If found outside our scewinDir, copy it there for consistent access
+          const inScewinDir = p.startsWith(scewinDir);
+          if (!inScewinDir) {
+            try {
+              ensureDir(scewinDir);
+              const dest = path.join(scewinDir, path.basename(p));
+              fs.copyFileSync(p, dest);
+              return { installed: true, path: dest, name: "SceWin (AMISCE)", id: "scewin" };
+            } catch(e) {}
+          }
+          return { installed: true, path: p, name: "SceWin (AMISCE)", id: "scewin" };
+        }
+      } catch(e) {}
+    }
+
+    // Last resort: recursive search in our downloads and scewin dirs
+    for (const searchDir of [DOWNLOADS_DIR, scewinDir]) {
+      try {
+        const findResult = await runCmd(`dir /s /b "${searchDir}\\*SCEWN*" "${searchDir}\\*SCEWIN_64*" 2>nul`, 10000);
+        if (findResult.success && findResult.output) {
+          const found = findResult.output.split("\n").find(l => l.trim().toLowerCase().endsWith(".exe"));
+          if (found && found.trim()) {
+            const foundPath = found.trim();
+            try {
+              ensureDir(scewinDir);
+              const dest = path.join(scewinDir, path.basename(foundPath));
+              fs.copyFileSync(foundPath, dest);
+              return { installed: true, path: dest, name: "SceWin (AMISCE)", id: "scewin" };
+            } catch(e) {
+              return { installed: true, path: foundPath, name: "SceWin (AMISCE)", id: "scewin" };
+            }
+          }
+        }
+      } catch(e) {}
     }
 
     return {
