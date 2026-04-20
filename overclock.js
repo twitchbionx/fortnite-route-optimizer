@@ -443,227 +443,290 @@ class SceWinManager {
     for (const f of [exportPath, localExportFull, amisceOutput, logFile]) {
       try { fs.unlinkSync(f); } catch(e) {}
     }
-    // Also clean System32 copies from previous runs
-    for (const name of [localExport, "AMISCE.txt"]) {
-      try { fs.unlinkSync(path.join("C:\\Windows\\System32", name)); } catch(e) {}
-    }
 
     // ═══════════════════════════════════════════════════════════════════
-    // Strategy v3.8.5: Windows Scheduled Task running as SYSTEM
+    // Strategy v3.8.6: DIAGNOSTIC — Direct elevation + elevated file search
     //
-    // The AMISCE driver ONLY loads when:
-    //  - The exe is elevated via UAC (Verb=RunAs, UseShellExecute=true)
-    //  - OR the process runs as NT AUTHORITY\SYSTEM
+    // What we know:
+    //  - Direct exe elevation (Verb=RunAs) → driver DOES load (v3.7.x proved this)
+    //  - ProcessStartInfo from elevated PS → driver won't load
+    //  - cmd /c from elevated PS → driver won't load
+    //  - Scheduled task as SYSTEM → didn't produce output (v3.8.5)
+    //  - Direct elevation exits with code 16, process doesn't hang
+    //  - No file found in scewin dir, System32, homedir, temp
     //
-    // Every child-process approach fails (cmd /c, batch, ProcessStartInfo)
-    // because they don't give SCEWIN the right elevation context.
+    // New approach: Run SCEWIN directly elevated, then use a SEPARATE
+    // elevated PowerShell to search the ENTIRE drive for recently created
+    // .txt files matching our patterns. The non-elevated Electron app
+    // might not be able to see files in protected directories.
     //
-    // Solution: Create a scheduled task that runs as SYSTEM with highest
-    // privileges. The task command pipes empty input to handle "Press any
-    // key" and redirects output to a log. SYSTEM has full kernel access
-    // so the driver will load. We trigger the task, wait, then read output.
-    //
-    // Fallback: If scheduled task fails, try direct exe elevation with
-    // UseShellExecute=true (driver loads but process hangs on "Press any
-    // key" — we kill it after delay and search for the output file).
+    // Also: run SCEWIN with /h (help) first to discover all available flags,
+    // and try /q (quiet) flag in case it suppresses "Press any key" and
+    // changes behavior.
     // ═══════════════════════════════════════════════════════════════════
 
-    const taskName = "FNOptSceWinExport";
-    const logPath = logFile.replace(/\\/g, "\\\\");
-
-    // ── Method 1: Scheduled Task as SYSTEM ──
-    let method1Success = false;
-    try {
-      // Build batch script that the task will run
-      const batchPath = path.join(scewinDir, "fn_task_export.bat");
-      const batchContent = [
-        "@echo off",
-        `cd /d "${scewinDir}"`,
-        `echo [TASK_START] >> "${logFile}"`,
-        `echo. | "${this.scewinPath}" /o /s "${localExportFull}" >> "${logFile}" 2>&1`,
-        `echo EXIT1:%ERRORLEVEL% >> "${logFile}"`,
-        `if not exist "${localExportFull}" (`,
-        `  echo [RETRY_RELATIVE] >> "${logFile}"`,
-        `  echo. | "${this.scewinPath}" /o /s ${localExport} >> "${logFile}" 2>&1`,
-        `  echo EXIT2:%ERRORLEVEL% >> "${logFile}"`,
-        `)`,
-        `if not exist "${localExportFull}" (`,
-        `  echo [RETRY_DEFAULT] >> "${logFile}"`,
-        `  echo. | "${this.scewinPath}" /o >> "${logFile}" 2>&1`,
-        `  echo EXIT3:%ERRORLEVEL% >> "${logFile}"`,
-        `)`,
-        `echo [FILES_IN_DIR] >> "${logFile}"`,
-        `dir /b "${scewinDir}\\*.txt" >> "${logFile}" 2>&1`,
-        `echo [FILES_SYS32] >> "${logFile}"`,
-        `dir /b "C:\\Windows\\System32\\fn_export*" >> "${logFile}" 2>&1`,
-        `dir /b "C:\\Windows\\System32\\AMISCE*" >> "${logFile}" 2>&1`,
-        `echo [TASK_DONE] >> "${logFile}"`,
-      ].join("\r\n");
-      fs.writeFileSync(batchPath, batchContent, "utf8");
-
-      // Delete old task if it exists, create new one as SYSTEM
-      const createTaskPS = [
-        "try { schtasks /delete /tn '" + taskName + "' /f 2>$null } catch {}",
-        "schtasks /create /tn '" + taskName + "' /tr '\"" + batchPath.replace(/'/g, "''") + "\"' /sc once /st 00:00 /ru SYSTEM /rl HIGHEST /f",
-        "Start-Sleep -Milliseconds 500",
-        "schtasks /run /tn '" + taskName + "'",
-      ].join("; ");
-
-      // This needs admin to create SYSTEM task, so elevate
-      const encodedCreate = Buffer.from(createTaskPS, "utf16le").toString("base64");
-      const elevatePS = [
-        "try {",
-        "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-        "  $psi.FileName = 'powershell.exe'",
-        `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCreate}'`,
-        "  $psi.Verb = 'RunAs'",
-        "  $psi.UseShellExecute = $true",
-        "  $psi.WindowStyle = 'Hidden'",
-        "  $proc = [System.Diagnostics.Process]::Start($psi)",
-        "  $proc.WaitForExit(30000)",
-        "  Write-Output 'TASK_LAUNCHED'",
-        "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
-      ].join("\n");
-
-      const taskResult = await runPS(elevatePS, 45000);
-      this._lastElevatedResult = taskResult;
-
-      // Wait for the task to complete (check for output file + log)
-      for (let i = 0; i < 15; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        try {
-          const log = fs.readFileSync(logFile, "utf8");
-          if (log.includes("[TASK_DONE]")) { method1Success = true; break; }
-        } catch(e) {}
-        // Also check if output file appeared
-        if (fs.existsSync(localExportFull) || fs.existsSync(amisceOutput) || fs.existsSync(exportPath)) {
-          method1Success = true;
-          break;
-        }
-      }
-
-      // Clean up: delete the scheduled task
-      try {
-        await runPS("try { schtasks /delete /tn '" + taskName + "' /f 2>$null } catch {}", 10000);
-      } catch(e) {}
-      try { fs.unlinkSync(batchPath); } catch(e) {}
-
-    } catch(e) {
-      // Task creation failed, fall through to method 2
-    }
-
-    // Read log for diagnostics
     let logContent = "";
-    try { logContent = fs.readFileSync(logFile, "utf8"); } catch(e) {}
+    const addLog = (msg) => { logContent += msg + "\n"; };
 
-    // ── Method 2 (fallback): Direct exe elevation ──
-    // Driver DOES load with direct elevation. Process hangs on "Press any key"
-    // but export file may already be written. We kill after timeout and search.
-    if (!method1Success || (logContent.includes("Unable to load driver"))) {
-      // Clean log for method 2
-      try { fs.unlinkSync(logFile); } catch(e) {}
-      logContent = "";
+    // ── Step 1: Get SCEWIN help output to discover flags ──
+    addLog("[STEP1] Getting SCEWIN help flags...");
+    const helpPS = [
+      "try {",
+      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+      `  $psi.FileName = '${this.scewinPath.replace(/'/g, "''")}'`,
+      "  $psi.Arguments = '/h'",
+      `  $psi.WorkingDirectory = '${scewinDir.replace(/'/g, "''")}'`,
+      "  $psi.Verb = 'RunAs'",
+      "  $psi.UseShellExecute = $true",
+      "  $psi.WindowStyle = 'Normal'",
+      "  $proc = [System.Diagnostics.Process]::Start($psi)",
+      "  $proc.WaitForExit(10000)",
+      "  if (!$proc.HasExited) { try { $proc.Kill() } catch {} }",
+      "  Write-Output \"HELP_EXIT:$($proc.ExitCode)\"",
+      "} catch { Write-Output \"HELP_ERROR:$($_.Exception.Message)\" }",
+    ].join("\n");
+    const helpResult = await runPS(helpPS, 20000);
+    addLog(`Help result: ${helpResult.output || ""} ${helpResult.error || ""}`);
 
+    // ── Step 2: Run SCEWIN with direct elevation, multiple flag combos ──
+    // Try /o /s with path, /o /s with simple name, /o alone, and /o /q variants
+    const attempts = [
+      { args: `/o /s "${localExportFull}"`, label: "/o /s absolute" },
+      { args: `/o /s ${localExport}`, label: "/o /s relative" },
+      { args: "/o", label: "/o only" },
+      { args: `/o /q /s "${localExportFull}"`, label: "/o /q /s absolute" },
+      { args: `/o /q /s ${localExport}`, label: "/o /q /s relative" },
+      { args: "/o /q", label: "/o /q only" },
+      { args: `/o /lang en /s "${localExportFull}"`, label: "/o /lang en /s" },
+    ];
+
+    for (const attempt of attempts) {
+      addLog(`[ATTEMPT] ${attempt.label}: ${attempt.args}`);
       const psScript = [
         "try {",
         "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
         `  $psi.FileName = '${this.scewinPath.replace(/'/g, "''")}'`,
-        `  $psi.Arguments = '/o /s ""${localExportFull.replace(/'/g, "''")}""'`,
+        `  $psi.Arguments = '${attempt.args.replace(/'/g, "''")}'`,
         `  $psi.WorkingDirectory = '${scewinDir.replace(/'/g, "''")}'`,
         "  $psi.Verb = 'RunAs'",
         "  $psi.UseShellExecute = $true",
         "  $psi.WindowStyle = 'Normal'",
         "  $proc = [System.Diagnostics.Process]::Start($psi)",
-        "  # Wait up to 15s for export to complete, then kill (hangs on Press any key)",
-        "  $proc.WaitForExit(15000)",
+        "  $waited = $proc.WaitForExit(15000)",
         "  if (!$proc.HasExited) {",
         "    try { $proc.Kill() } catch {}",
-        "    Write-Output 'KILLED_AFTER_TIMEOUT'",
+        "    Write-Output 'KILLED'",
         "  } else {",
-        "    Write-Output \"EXITED:$($proc.ExitCode)\"",
+        "    Write-Output \"EXIT:$($proc.ExitCode)\"",
         "  }",
-        "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
+        "} catch { Write-Output \"ERR:$($_.Exception.Message)\" }",
       ].join("\n");
 
-      const directResult = await runPS(psScript, 30000);
-      this._lastElevatedResult = directResult;
-      logContent = `[DirectElevation] ${directResult.output || ""} ${directResult.error || ""}`;
+      const result = await runPS(psScript, 25000);
+      addLog(`  Result: ${(result.output || "").trim()}`);
 
-      // Give a moment for file I/O to flush
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 2000));
 
-      // If that used absolute path and WorkingDirectory was ignored,
-      // try again with /o only (default AMISCE.txt in working dir — which might be System32)
-      if (!fs.existsSync(localExportFull) && !fs.existsSync(amisceOutput)) {
-        const psScript2 = [
-          "try {",
-          "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-          `  $psi.FileName = '${this.scewinPath.replace(/'/g, "''")}'`,
-          "  $psi.Arguments = '/o'",
-          `  $psi.WorkingDirectory = '${scewinDir.replace(/'/g, "''")}'`,
-          "  $psi.Verb = 'RunAs'",
-          "  $psi.UseShellExecute = $true",
-          "  $psi.WindowStyle = 'Normal'",
-          "  $proc = [System.Diagnostics.Process]::Start($psi)",
-          "  $proc.WaitForExit(15000)",
-          "  if (!$proc.HasExited) { try { $proc.Kill() } catch {} }",
-          "  Write-Output 'ATTEMPT2_DONE'",
-          "} catch { Write-Output \"ERROR2:$($_.Exception.Message)\" }",
-        ].join("\n");
-        const directResult2 = await runPS(psScript2, 30000);
-        logContent += ` | [Attempt2_/o] ${directResult2.output || ""}`;
-        await new Promise(r => setTimeout(r, 3000));
+      // Quick check if file appeared
+      if (fs.existsSync(localExportFull) || fs.existsSync(amisceOutput) || fs.existsSync(exportPath)) {
+        addLog("  FILE FOUND after this attempt!");
+        break;
       }
     }
 
+    // ── Step 3: Elevated file search ──
+    // Use an elevated PowerShell to search for recently created .txt files
+    // in directories we might not be able to see as a normal user
+    addLog("[STEP3] Running elevated file search...");
+
+    const searchPS = [
+      "$ErrorActionPreference = 'Continue'",
+      "$results = @()",
+      "# Search common locations for recent .txt files",
+      "$searchDirs = @(",
+      `  '${scewinDir.replace(/'/g, "''")}',`,
+      "  'C:\\Windows\\System32',",
+      "  'C:\\Windows',",
+      "  'C:\\Windows\\SysWOW64',",
+      "  'C:\\Windows\\Temp',",
+      `  '${os.homedir().replace(/'/g, "''")}',`,
+      `  '${os.tmpdir().replace(/'/g, "''")}',`,
+      "  'C:\\'",
+      ")",
+      "$cutoff = (Get-Date).AddMinutes(-5)",
+      "foreach ($d in $searchDirs) {",
+      "  try {",
+      "    Get-ChildItem $d -Filter '*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $cutoff } | ForEach-Object {",
+      "      $results += \"FOUND: $($_.FullName) | Size: $($_.Length) | Modified: $($_.LastWriteTime)\"",
+      "    }",
+      "  } catch {}",
+      "}",
+      "# Also search for AMISCE specifically",
+      "foreach ($d in $searchDirs) {",
+      "  try {",
+      "    Get-ChildItem $d -Filter 'AMISCE*' -File -ErrorAction SilentlyContinue | ForEach-Object {",
+      "      $results += \"AMISCE: $($_.FullName) | Size: $($_.Length) | Modified: $($_.LastWriteTime)\"",
+      "    }",
+      "  } catch {}",
+      "}",
+      "# Check for amifldrv64.sys (driver file)",
+      `if (Test-Path '${path.join(scewinDir, "amifldrv64.sys").replace(/'/g, "''")}') {`,
+      "  $results += 'DRIVER_EXISTS: amifldrv64.sys found in scewin dir'",
+      "} else {",
+      "  $results += 'DRIVER_MISSING: amifldrv64.sys NOT in scewin dir'",
+      "}",
+      "# Check what's in the scewin directory",
+      `Get-ChildItem '${scewinDir.replace(/'/g, "''")}' -File -ErrorAction SilentlyContinue | ForEach-Object {`,
+      "  $results += \"SCEWIN_DIR: $($_.Name) | Size: $($_.Length) | Modified: $($_.LastWriteTime)\"",
+      "}",
+      "# Check loaded drivers for amisce",
+      "try {",
+      "  $drv = Get-WmiObject Win32_SystemDriver | Where-Object { $_.Name -like '*ami*' -or $_.Name -like '*fldrv*' }",
+      "  if ($drv) { $results += \"LOADED_DRIVER: $($drv.Name) State: $($drv.State)\" }",
+      "  else { $results += 'NO_AMI_DRIVER_LOADED' }",
+      "} catch { $results += 'DRIVER_CHECK_ERROR' }",
+      "$results -join '`n'",
+    ].join("\n");
+
+    const encodedSearch = Buffer.from(searchPS, "utf16le").toString("base64");
+    const elevateSearchPS = [
+      "try {",
+      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+      "  $psi.FileName = 'powershell.exe'",
+      `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedSearch}'`,
+      "  $psi.Verb = 'RunAs'",
+      "  $psi.UseShellExecute = $false",
+      "  $psi.RedirectStandardOutput = $true",
+      "  $psi.RedirectStandardError = $true",
+      "  $proc = [System.Diagnostics.Process]::Start($psi)",
+      "  $out = $proc.StandardOutput.ReadToEnd()",
+      "  $proc.WaitForExit(30000)",
+      "  Write-Output $out",
+      "} catch { Write-Output \"SEARCH_ERROR:$($_.Exception.Message)\" }",
+    ].join("\n");
+
+    // Wait, we can't use Verb=RunAs + UseShellExecute=$false. Use the elevated approach:
+    // Save search results to the log file from inside elevated PS
+    const searchPS2 = [
+      "$ErrorActionPreference = 'Continue'",
+      `$logFile = '${logFile.replace(/'/g, "''")}'`,
+      "Add-Content $logFile '[ELEVATED_SEARCH]'",
+      "# Search common locations for recent .txt files",
+      "$searchDirs = @(",
+      `  '${scewinDir.replace(/'/g, "''")}',`,
+      "  'C:\\Windows\\System32',",
+      "  'C:\\Windows',",
+      "  'C:\\Windows\\SysWOW64',",
+      "  'C:\\Windows\\Temp',",
+      `  '${os.homedir().replace(/'/g, "''")}',`,
+      `  '${os.tmpdir().replace(/'/g, "''")}',`,
+      "  'C:\\'",
+      ")",
+      "$cutoff = (Get-Date).AddMinutes(-5)",
+      "foreach ($d in $searchDirs) {",
+      "  try {",
+      "    Get-ChildItem $d -Filter '*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $cutoff } | ForEach-Object {",
+      "      Add-Content $logFile \"RECENT_TXT: $($_.FullName) | $($_.Length)b | $($_.LastWriteTime)\"",
+      "    }",
+      "  } catch {}",
+      "}",
+      "foreach ($d in $searchDirs) {",
+      "  try {",
+      "    Get-ChildItem $d -Filter 'AMISCE*' -File -ErrorAction SilentlyContinue | ForEach-Object {",
+      "      Add-Content $logFile \"AMISCE_FILE: $($_.FullName) | $($_.Length)b | $($_.LastWriteTime)\"",
+      "    }",
+      "  } catch {}",
+      "}",
+      "# Driver check",
+      `$drvPath = '${path.join(scewinDir, "amifldrv64.sys").replace(/'/g, "''")}'`,
+      "if (Test-Path $drvPath) { Add-Content $logFile 'DRIVER_FILE: EXISTS' }",
+      "else { Add-Content $logFile 'DRIVER_FILE: MISSING' }",
+      "# All files in scewin dir",
+      "Add-Content $logFile '[SCEWIN_DIR_CONTENTS]'",
+      `Get-ChildItem '${scewinDir.replace(/'/g, "''")}' -File -ErrorAction SilentlyContinue | ForEach-Object {`,
+      "  Add-Content $logFile \"  $($_.Name) | $($_.Length)b | $($_.LastWriteTime)\"",
+      "}",
+      "# Loaded drivers check",
+      "try {",
+      "  $amidrvs = Get-WmiObject Win32_SystemDriver | Where-Object { $_.Name -like '*ami*' -or $_.Name -like '*fldrv*' }",
+      "  if ($amidrvs) { $amidrvs | ForEach-Object { Add-Content $logFile \"LOADED_DRV: $($_.Name) State:$($_.State) Path:$($_.PathName)\" } }",
+      "  else { Add-Content $logFile 'NO_AMI_DRIVER_LOADED' }",
+      "} catch { Add-Content $logFile 'DRIVER_QUERY_ERROR' }",
+      "# Try to copy any found export files to accessible location",
+      "$copyDest = '" + exportPath.replace(/'/g, "''") + "'",
+      "foreach ($d in $searchDirs) {",
+      "  foreach ($name in @('fn_export.txt', 'AMISCE.txt')) {",
+      "    $src = Join-Path $d $name",
+      "    if (Test-Path $src) {",
+      "      try {",
+      "        Copy-Item $src $copyDest -Force",
+      "        Add-Content $logFile \"COPIED: $src -> $copyDest\"",
+      "      } catch { Add-Content $logFile \"COPY_FAIL: $src -> $($_.Exception.Message)\" }",
+      "    }",
+      "  }",
+      "}",
+      "Add-Content $logFile '[SEARCH_DONE]'",
+    ].join("\n");
+
+    const encodedSearch2 = Buffer.from(searchPS2, "utf16le").toString("base64");
+    const searchElevatePS = [
+      "try {",
+      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+      "  $psi.FileName = 'powershell.exe'",
+      `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedSearch2}'`,
+      "  $psi.Verb = 'RunAs'",
+      "  $psi.UseShellExecute = $true",
+      "  $psi.WindowStyle = 'Hidden'",
+      "  $proc = [System.Diagnostics.Process]::Start($psi)",
+      "  $proc.WaitForExit(60000)",
+      "  if (!$proc.HasExited) { $proc.Kill() }",
+      "  Write-Output 'SEARCH_DONE'",
+      "} catch { Write-Output \"SEARCH_ERROR:$($_.Exception.Message)\" }",
+    ].join("\n");
+
+    const searchResult = await runPS(searchElevatePS, 75000);
+    addLog(`Search launch: ${(searchResult.output || "").trim()}`);
+
+    // Wait for search to complete
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const log = fs.readFileSync(logFile, "utf8");
+        if (log.includes("[SEARCH_DONE]")) break;
+      } catch(e) {}
+    }
+
+    // Read the full log
+    try { logContent += fs.readFileSync(logFile, "utf8"); } catch(e) {}
     this._lastExportLog = logContent;
 
-    // ── Aggressive file search ──
-    // The output file could be in: scewin dir, System32, user profile, temp, export path
-    const searchPaths = [
-      exportPath,
-      localExportFull,
-      amisceOutput,
-      path.join("C:\\Windows\\System32", localExport),
-      path.join("C:\\Windows\\System32", "AMISCE.txt"),
-      path.join(os.homedir(), localExport),
-      path.join(os.homedir(), "AMISCE.txt"),
-      path.join(os.tmpdir(), localExport),
-      path.join(os.tmpdir(), "AMISCE.txt"),
-      path.join("C:\\Windows", localExport),
-      path.join("C:\\Windows", "AMISCE.txt"),
-    ];
-
-    // Also scan scewin dir for any recently created .txt files
-    try {
-      const files = fs.readdirSync(scewinDir);
-      for (const f of files) {
-        if ((f.endsWith(".txt") || f.endsWith(".TXT")) && !searchPaths.includes(path.join(scewinDir, f))) {
-          const fp = path.join(scewinDir, f);
-          try {
-            const stat = fs.statSync(fp);
-            if (Date.now() - stat.mtimeMs < 120000) searchPaths.push(fp);
-          } catch(e) {}
-        }
-      }
-    } catch(e) {}
-
-    // Log which files exist for debugging
-    const foundFiles = [];
-    for (const sp of searchPaths) {
+    // Now check if the elevated search found and copied the file
+    if (fs.existsSync(exportPath)) {
       try {
-        if (fs.existsSync(sp)) {
-          const stat = fs.statSync(sp);
-          foundFiles.push(`${sp} (${stat.size}b, ${Math.round((Date.now()-stat.mtimeMs)/1000)}s ago)`);
+        const raw = fs.readFileSync(exportPath, "utf8");
+        if (raw.length > 50) {
+          const settings = this._parseExport(raw);
+          let count = Object.keys(settings).length;
+          if (count > 0) {
+            this.currentSettings = settings;
+            return { success: true, settings, settingCount: count, method: "direct-elevated-search" };
+          }
+          const altSettings = this._parseExportAlt(raw);
+          count = Object.keys(altSettings).length;
+          if (count > 0) {
+            this.currentSettings = altSettings;
+            return { success: true, settings: altSettings, settingCount: count, method: "direct-elevated-search-alt" };
+          }
         }
       } catch(e) {}
     }
-    if (foundFiles.length > 0) {
-      logContent += ` | [FOUND_FILES] ${foundFiles.join("; ")}`;
-      this._lastExportLog = logContent;
-    }
 
-    // Try to parse each found file
+    // Also check all the standard paths one more time
+    const searchPaths = [
+      exportPath, localExportFull, amisceOutput,
+      path.join("C:\\Windows\\System32", localExport),
+      path.join("C:\\Windows\\System32", "AMISCE.txt"),
+    ];
     for (const checkPath of searchPaths) {
       try {
         if (fs.existsSync(checkPath)) {
@@ -673,42 +736,20 @@ class SceWinManager {
             let count = Object.keys(settings).length;
             if (count > 0) {
               this.currentSettings = settings;
-              if (checkPath !== exportPath) {
-                try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
-              }
-              return { success: true, settings, settingCount: count, method: "schtask-system" };
-            }
-            const altSettings = this._parseExportAlt(raw);
-            count = Object.keys(altSettings).length;
-            if (count > 0) {
-              this.currentSettings = altSettings;
-              if (checkPath !== exportPath) {
-                try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
-              }
-              return { success: true, settings: altSettings, settingCount: count, method: "schtask-system-alt" };
+              if (checkPath !== exportPath) try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
+              return { success: true, settings, settingCount: count, method: "found-after-search" };
             }
           }
         }
       } catch(e) {}
     }
 
-    // Failed — build helpful error
-    const uacDenied = (logContent || "").includes("canceled") || (logContent || "").includes("denied");
-    const driverError = (logContent || "").includes("Unable to load driver");
-
-    let errorMsg = "SceWin export failed. ";
-    if (uacDenied) {
-      errorMsg += "Admin elevation required — click 'Yes' on the UAC prompt.";
-    } else if (driverError) {
-      errorMsg += "AMISCE driver won't load. Try: (1) Disable Secure Boot in BIOS, (2) Boot with driver signature enforcement disabled.";
-    } else {
-      errorMsg += logContent ? `Log: ${logContent.substring(0, 500)}` : "No output — process may have timed out.";
-    }
-    if (foundFiles.length > 0) {
-      errorMsg += ` Found files: ${foundFiles.join("; ")}`;
-    }
-
-    return { success: false, error: errorMsg, log: logContent };
+    // Return diagnostic info even on failure
+    return {
+      success: false,
+      error: `SceWin diagnostic export. Full log:\n${logContent}`,
+      log: logContent,
+    };
   }
 
   _parseExport(raw) {
