@@ -445,53 +445,124 @@ class SceWinManager {
       try { fs.unlinkSync(f); } catch(e) {}
     }
 
-    // Strategy: Elevate POWERSHELL as admin via Verb=RunAs, then from within
-    // that elevated PowerShell, cd to SCEWIN's directory and run it with
-    // echo piped to handle the "Press any key" pause.
+    // Strategy: Elevate PowerShell as admin, then from inside elevated PS,
+    // launch SCEWIN via ProcessStartInfo with UseShellExecute=$false.
+    // This lets us redirect stdin (handle "Press any key") AND the process
+    // inherits admin token directly from the elevated PowerShell parent.
     //
-    // Why this works when other approaches don't:
-    //  - Elevating the EXE directly: driver loads BUT can't pipe stdin (UseShellExecute=true)
-    //    and WorkingDirectory is ignored, so exit code 16 (no output file)
-    //  - Elevating a BAT file: driver WON'T load (different elevation token context)
-    //  - Elevating PowerShell: gets full admin, then runs SCEWIN as a child process
-    //    which inherits the admin token. We CAN pipe stdin and control working dir.
+    // Critically: we do NOT use cmd /c or & operator. We use .NET ProcessStartInfo
+    // inside the elevated PS to launch SCEWIN directly. This gives SCEWIN the
+    // closest possible context to being the elevated process itself.
+    //
+    // Previous failures:
+    //  v3.7.x: Elevate exe directly → driver loads, but UseShellExecute=true means
+    //           no stdin redirect + WorkingDirectory ignored → exit code 16
+    //  v3.8.1: Elevate batch → driver won't load
+    //  v3.8.2: Elevate PS → & operator → NativeCommandError from stderr
+    //  v3.8.3: Elevate PS → cmd /c → driver won't load (cmd strips privileges?)
 
-    // Build the inner PowerShell command that will run elevated.
-    // Use cmd /c to run SCEWIN instead of PowerShell's & operator, because
-    // SCEWIN writes to stderr which PowerShell treats as NativeCommandError.
-    // cmd /c doesn't have this problem and matches how the user runs it manually.
-    const psLogFile = batchLog.replace(/'/g, "''");
+    const psLogFile = batchLog.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const psExePath = this.scewinPath.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const psScewinDir = scewinDir.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const psLocalFull = localExportFull.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const psAmiscePath = amisceOutput.replace(/\\/g, "\\\\").replace(/'/g, "''");
 
-    // Use cmd /c with echo pipe — this is exactly what works from admin CMD
+    // Inner PS command: use .NET ProcessStartInfo to launch SCEWIN with stdin redirect
     const innerCmd = [
-      `$ErrorActionPreference = 'Continue'`,
-      `Add-Content '${psLogFile}' '[Starting export via cmd /c]'`,
-      // Attempt 1: /o /s with absolute path via cmd /c
-      `Add-Content '${psLogFile}' '[Attempt1] /o /s absolute path'`,
-      `$r1 = cmd /c "cd /d ""${scewinDir}"" && echo. | ""${this.scewinPath}"" /o /s ""${localExportFull}"" 2>&1"`,
-      `Add-Content '${psLogFile}' ($r1 | Out-String)`,
-      `Add-Content '${psLogFile}' "EXIT1:$LASTEXITCODE"`,
-      // Attempt 2: /o /s with just filename
-      `if (-not (Test-Path '${localExportFull.replace(/'/g, "''")}')) {`,
-      `  Add-Content '${psLogFile}' '[Attempt2] /o /s relative'`,
-      `  $r2 = cmd /c "cd /d ""${scewinDir}"" && echo. | ""${scewinExe}"" /o /s ${localExport} 2>&1"`,
-      `  Add-Content '${psLogFile}' ($r2 | Out-String)`,
-      `  Add-Content '${psLogFile}' "EXIT2:$LASTEXITCODE"`,
-      `}`,
-      // Attempt 3: /o only
-      `if ((-not (Test-Path '${localExportFull.replace(/'/g, "''")}')) -and (-not (Test-Path '${amisceOutput.replace(/'/g, "''")}')) ) {`,
+      "$ErrorActionPreference = 'Continue'",
+      `Add-Content '${psLogFile}' '[Elevated PS starting]'`,
+      "",
+      "# Attempt 1: /o /s with absolute path, stdin redirected",
+      `Add-Content '${psLogFile}' '[Attempt1] ProcessStartInfo /o /s absolute'`,
+      "try {",
+      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+      `  $psi.FileName = '${psExePath}'`,
+      `  $psi.Arguments = '/o /s ""${psLocalFull}""'`,
+      `  $psi.WorkingDirectory = '${psScewinDir}'`,
+      "  $psi.UseShellExecute = $false",
+      "  $psi.RedirectStandardInput = $true",
+      "  $psi.RedirectStandardOutput = $true",
+      "  $psi.RedirectStandardError = $true",
+      "  $psi.CreateNoWindow = $false",
+      "  $proc = [System.Diagnostics.Process]::Start($psi)",
+      "  Start-Sleep -Milliseconds 500",
+      "  $proc.StandardInput.WriteLine('')",
+      "  $proc.StandardInput.Close()",
+      "  $stdout = $proc.StandardOutput.ReadToEnd()",
+      "  $stderr = $proc.StandardError.ReadToEnd()",
+      "  $proc.WaitForExit(30000)",
+      `  Add-Content '${psLogFile}' "stdout: $stdout"`,
+      `  Add-Content '${psLogFile}' "stderr: $stderr"`,
+      `  Add-Content '${psLogFile}' "EXIT1:$($proc.ExitCode)"`,
+      "} catch {",
+      `  Add-Content '${psLogFile}' "ERROR1: $($_.Exception.Message)"`,
+      "}",
+      "",
+      "# Attempt 2: /o /s with simple filename",
+      `if (-not (Test-Path '${psLocalFull}')) {`,
+      `  Add-Content '${psLogFile}' '[Attempt2] /o /s relative filename'`,
+      "  try {",
+      "    $psi2 = New-Object System.Diagnostics.ProcessStartInfo",
+      `    $psi2.FileName = '${psExePath}'`,
+      `    $psi2.Arguments = '/o /s ${localExport}'`,
+      `    $psi2.WorkingDirectory = '${psScewinDir}'`,
+      "    $psi2.UseShellExecute = $false",
+      "    $psi2.RedirectStandardInput = $true",
+      "    $psi2.RedirectStandardOutput = $true",
+      "    $psi2.RedirectStandardError = $true",
+      "    $proc2 = [System.Diagnostics.Process]::Start($psi2)",
+      "    Start-Sleep -Milliseconds 500",
+      "    $proc2.StandardInput.WriteLine('')",
+      "    $proc2.StandardInput.Close()",
+      "    $out2 = $proc2.StandardOutput.ReadToEnd()",
+      "    $err2 = $proc2.StandardError.ReadToEnd()",
+      "    $proc2.WaitForExit(30000)",
+      `    Add-Content '${psLogFile}' "stdout2: $out2"`,
+      `    Add-Content '${psLogFile}' "stderr2: $err2"`,
+      `    Add-Content '${psLogFile}' "EXIT2:$($proc2.ExitCode)"`,
+      "  } catch {",
+      `    Add-Content '${psLogFile}' "ERROR2: $($_.Exception.Message)"`,
+      "  }",
+      "}",
+      "",
+      "# Attempt 3: /o only (default AMISCE.txt output)",
+      `if ((-not (Test-Path '${psLocalFull}')) -and (-not (Test-Path '${psAmiscePath}'))) {`,
       `  Add-Content '${psLogFile}' '[Attempt3] /o only'`,
-      `  $r3 = cmd /c "cd /d ""${scewinDir}"" && echo. | ""${scewinExe}"" /o 2>&1"`,
-      `  Add-Content '${psLogFile}' ($r3 | Out-String)`,
-      `  Add-Content '${psLogFile}' "EXIT3:$LASTEXITCODE"`,
-      `}`,
-      // Log what files exist
+      "  try {",
+      "    $psi3 = New-Object System.Diagnostics.ProcessStartInfo",
+      `    $psi3.FileName = '${psExePath}'`,
+      "    $psi3.Arguments = '/o'",
+      `    $psi3.WorkingDirectory = '${psScewinDir}'`,
+      "    $psi3.UseShellExecute = $false",
+      "    $psi3.RedirectStandardInput = $true",
+      "    $psi3.RedirectStandardOutput = $true",
+      "    $psi3.RedirectStandardError = $true",
+      "    $proc3 = [System.Diagnostics.Process]::Start($psi3)",
+      "    Start-Sleep -Milliseconds 500",
+      "    $proc3.StandardInput.WriteLine('')",
+      "    $proc3.StandardInput.Close()",
+      "    $out3 = $proc3.StandardOutput.ReadToEnd()",
+      "    $err3 = $proc3.StandardError.ReadToEnd()",
+      "    $proc3.WaitForExit(30000)",
+      `    Add-Content '${psLogFile}' "stdout3: $out3"`,
+      `    Add-Content '${psLogFile}' "stderr3: $err3"`,
+      `    Add-Content '${psLogFile}' "EXIT3:$($proc3.ExitCode)"`,
+      "  } catch {",
+      `    Add-Content '${psLogFile}' "ERROR3: $($_.Exception.Message)"`,
+      "  }",
+      "}",
+      "",
+      "# Log files in directory",
       `Add-Content '${psLogFile}' '[FILES]'`,
-      `Get-ChildItem '${scewinDir.replace(/'/g, "''")}' -Filter *.txt | ForEach-Object { Add-Content '${psLogFile}' $_.Name }`,
+      `Get-ChildItem '${psScewinDir}' -Filter *.txt | ForEach-Object { Add-Content '${psLogFile}' $_.Name }`,
+      "# Also check System32 in case file ended up there",
+      `Add-Content '${psLogFile}' '[FILES_SYS32]'`,
+      "Get-ChildItem 'C:\\\\Windows\\\\System32' -Filter 'fn_export*' -ErrorAction SilentlyContinue | ForEach-Object { Add-Content '" + psLogFile + "' $_.FullName }",
+      "Get-ChildItem 'C:\\\\Windows\\\\System32' -Filter 'AMISCE*' -ErrorAction SilentlyContinue | ForEach-Object { Add-Content '" + psLogFile + "' $_.FullName }",
       `Add-Content '${psLogFile}' '[DONE]'`,
-    ].join("; ");
+    ].join("\n");
 
-    // Encode the inner command as base64 to avoid quoting hell
+    // Encode as base64 for clean passing to elevated PowerShell
     const encodedCmd = Buffer.from(innerCmd, "utf16le").toString("base64");
 
     const psScript = [
@@ -503,7 +574,7 @@ class SceWinManager {
       "  $psi.UseShellExecute = $true",
       "  $psi.WindowStyle = 'Normal'",
       "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      "  $proc.WaitForExit(60000)",
+      "  $proc.WaitForExit(90000)",
       "  if (!$proc.HasExited) { $proc.Kill() }",
       "  Start-Sleep -Seconds 2",
       "  Write-Output 'ELEVATED_PS_DONE'",
@@ -690,20 +761,47 @@ class SceWinManager {
   }
 
   // Helper: run any SCEWIN command elevated via PowerShell RunAs
+  // Uses .NET ProcessStartInfo from elevated PS (same approach as exportCurrentSettings)
+  // so SCEWIN inherits admin token directly — no cmd /c intermediary that strips driver privileges
   async _runScewinElevated(args, timeout = 45000) {
     const scewinDir = path.dirname(this.scewinPath);
     const logFile = path.join(scewinDir, "fn_scewin_cmd_log.txt");
     try { fs.unlinkSync(logFile); } catch(e) {}
 
-    const psLog = logFile.replace(/'/g, "''");
+    const psLog = logFile.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const psExePath = this.scewinPath.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const psScewinDir = scewinDir.replace(/\\/g, "\\\\").replace(/'/g, "''");
 
-    // Use cmd /c to avoid PowerShell NativeCommandError with SCEWIN's stderr
+    // Inner PS command: use .NET ProcessStartInfo to launch SCEWIN with stdin redirect
     const innerCmd = [
-      `$ErrorActionPreference = 'Continue'`,
-      `$r = cmd /c "cd /d ""${scewinDir}"" && echo. | ""${this.scewinPath}"" ${args} 2>&1"`,
-      `Add-Content '${psLog}' ($r | Out-String)`,
-      `Add-Content '${psLog}' "EXIT_CODE:$LASTEXITCODE"`,
-    ].join("; ");
+      "$ErrorActionPreference = 'Continue'",
+      `Add-Content '${psLog}' '[ScewinCmd starting]'`,
+      `Add-Content '${psLog}' 'Args: ${args.replace(/'/g, "''")}'`,
+      "try {",
+      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+      `  $psi.FileName = '${psExePath}'`,
+      `  $psi.Arguments = '${args.replace(/'/g, "''")}'`,
+      `  $psi.WorkingDirectory = '${psScewinDir}'`,
+      "  $psi.UseShellExecute = $false",
+      "  $psi.RedirectStandardInput = $true",
+      "  $psi.RedirectStandardOutput = $true",
+      "  $psi.RedirectStandardError = $true",
+      "  $psi.CreateNoWindow = $false",
+      "  $proc = [System.Diagnostics.Process]::Start($psi)",
+      "  Start-Sleep -Milliseconds 500",
+      "  $proc.StandardInput.WriteLine('')",
+      "  $proc.StandardInput.Close()",
+      "  $stdout = $proc.StandardOutput.ReadToEnd()",
+      "  $stderr = $proc.StandardError.ReadToEnd()",
+      "  $proc.WaitForExit(30000)",
+      `  Add-Content '${psLog}' "stdout: $stdout"`,
+      `  Add-Content '${psLog}' "stderr: $stderr"`,
+      `  Add-Content '${psLog}' "EXIT_CODE:$($proc.ExitCode)"`,
+      "} catch {",
+      `  Add-Content '${psLog}' "ERROR: $($_.Exception.Message)"`,
+      "}",
+      `Add-Content '${psLog}' '[DONE]'`,
+    ].join("\n");
 
     const encodedCmd = Buffer.from(innerCmd, "utf16le").toString("base64");
 
