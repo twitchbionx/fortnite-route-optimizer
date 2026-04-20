@@ -1082,17 +1082,23 @@ class SceWinManager {
     const s = this.currentSettings;
     const allNames = Object.keys(s);
 
-    // Fuzzy find helper: search all setting names for any keyword match
-    const fuzzyGet = (keywords, ...hardcoded) => {
+    // Fuzzy find helper with exclude support (same as _discoverBiosSettings)
+    const fuzzyGet = (keywords, excludes = [], ...hardcoded) => {
       // Try hardcoded names first
       for (const name of hardcoded) {
         if (s[name]) return s[name];
       }
-      // Then fuzzy search
-      for (const name of allNames) {
-        const lower = name.toLowerCase();
-        for (const kw of keywords) {
-          if (lower.includes(kw.toLowerCase())) return s[name];
+      // Then fuzzy search with excludes
+      for (const kw of keywords) {
+        const kwLower = kw.toLowerCase();
+        for (const name of allNames) {
+          const lower = name.toLowerCase();
+          if (!lower.includes(kwLower)) continue;
+          let excluded = false;
+          for (const ex of excludes) {
+            if (lower.includes(ex.toLowerCase())) { excluded = true; break; }
+          }
+          if (!excluded && s[name]) return s[name];
         }
       }
       return null;
@@ -1105,21 +1111,24 @@ class SceWinManager {
         "all core ratio", "cpu core ratio", "core ratio limit",
         "p-core ratio", "pcore ratio", "processor core ratio",
         "cpu ratio", "core ratio", "frequency ratio",
-        "ratio limit", "multiplier", "cpu multi", "oc ratio", "max ratio", "ratio",
-      ], "CPU Ratio", "CPU Core Ratio", "Core Ratio Limit", "All Core Ratio Limit"),
+        "ratio limit", "multiplier", "cpu multi", "oc ratio", "max ratio",
+      ], ["igp", "gt ratio", "ring", "uncore", "memory", "dram", "cache", "e-core", "ecore"],
+        "CPU Ratio", "CPU Core Ratio", "Core Ratio Limit", "All Core Ratio Limit"),
       cpuVoltage: fuzzyGet([
         "cpu core/cache voltage", "cpu core voltage override",
         "vcore override voltage", "cpu vcore override", "dynamic vcore",
         "core voltage override", "cpu core voltage", "cpu cache voltage",
         "vcore override", "vcore voltage", "ia voltage offset",
         "cpu vcore", "core voltage", "override voltage", "adaptive voltage",
-        "vcore", "cpu voltage", "cpu v", "vid override", "vid",
-      ], "CPU Core Voltage", "CPU Vcore", "Vcore Override", "CPU Core/Cache Voltage"),
+        "vcore", "cpu voltage",
+      ], ["loadline", "calibration", "llc", "load line", "mode", "svid", "ratio", "ring", "sa ", "dram", "gt ", "pll", "io "],
+        "CPU Core Voltage", "CPU Vcore", "Vcore Override", "CPU Core/Cache Voltage"),
       cpuVoltageMode: fuzzyGet([
         "cpu core/cache voltage mode", "svid behavior",
         "cpu core voltage mode", "cpu vcore mode",
         "voltage mode", "vcore mode", "svid support",
-      ], "CPU Core Voltage Mode", "Vcore Mode", "SVID Behavior"),
+      ], ["loadline", "calibration", "llc", "ratio", "dram"],
+        "CPU Core Voltage Mode", "Vcore Mode", "SVID Behavior"),
       powerLimit1: fuzzyGet([
         "long duration package power limit", "long duration power limit",
         "package power limit1", "package power limit 1",
@@ -1127,34 +1136,33 @@ class SceWinManager {
         "processor base power", "base power limit",
         "power limit 1", "long duration", "pl1 (w)", "pl1(w)", "pl1",
         "tdp limit", "tdp power",
-      ], "Long Duration Power Limit", "PL1", "Package Power Limit 1"),
+      ], [], "Long Duration Power Limit", "PL1", "Package Power Limit 1"),
       powerLimit2: fuzzyGet([
         "short duration package power limit", "short duration power limit",
         "package power limit2", "package power limit 2",
         "power limit 2 value", "maximum turbo power",
         "max turbo power", "power limit 2", "short duration",
         "pl2 (w)", "pl2(w)", "pl2", "turbo power limit",
-      ], "Short Duration Power Limit", "PL2", "Package Power Limit 2"),
+      ], [], "Short Duration Power Limit", "PL2", "Package Power Limit 2"),
       tccOffset: fuzzyGet([
         "tcc activation offset", "cpu tcc offset", "tcc offset", "tcc",
-      ], "TCC Activation Offset"),
+      ], [], "TCC Activation Offset"),
       ringRatio: fuzzyGet([
         "min cpu cache ratio", "max cpu cache ratio", "cpu cache ratio",
         "adjust ring ratio", "ring multiplier", "cpu uncore ratio",
         "ring ratio", "cache ratio", "uncore ratio", "uncore frequency",
-        "ring", "cache", "uncore",
-      ], "Ring Ratio", "Cache Ratio", "Uncore Ratio"),
+      ], ["igp", "cpu core", "cpu ratio"], "Ring Ratio", "Cache Ratio", "Uncore Ratio"),
       iccMax: fuzzyGet([
         "iccmax unlimited", "icc max override", "ia ac/dc loadline",
         "ia ac loadline", "cpu vr current limit", "current limit",
         "ia ac load line", "icc max", "iccmax", "icc",
-      ], "ICC Max", "IA AC Load Line"),
+      ], [], "ICC Max", "IA AC Load Line"),
       avxOffset: fuzzyGet([
         "avx instruction core ratio", "avx2 ratio offset",
         "avx ratio offset", "avx frequency trim",
         "avx 512 offset", "avx-512 offset", "avx512 ratio offset",
         "avx offset", "avx2 offset", "avx negative offset",
-      ], "AVX Offset", "AVX2 Ratio Offset"),
+      ], [], "AVX Offset", "AVX2 Ratio Offset"),
     };
 
     return { success: true, settings: cpuSettings };
@@ -1171,17 +1179,21 @@ class SceWinManager {
     const s = this.currentSettings;
     const allNames = Object.keys(s);
 
-    // Fuzzy find helper: search all setting names for any keyword match
-    const fuzzyGet = (keywords, ...hardcoded) => {
-      // Try hardcoded names first
+    // Fuzzy find helper with exclude support
+    const fuzzyGet = (keywords, excludes = [], ...hardcoded) => {
       for (const name of hardcoded) {
         if (s[name]) return s[name];
       }
-      // Then fuzzy search
-      for (const name of allNames) {
-        const lower = name.toLowerCase();
-        for (const kw of keywords) {
-          if (lower.includes(kw.toLowerCase())) return s[name];
+      for (const kw of keywords) {
+        const kwLower = kw.toLowerCase();
+        for (const name of allNames) {
+          const lower = name.toLowerCase();
+          if (!lower.includes(kwLower)) continue;
+          let excluded = false;
+          for (const ex of excludes) {
+            if (lower.includes(ex.toLowerCase())) { excluded = true; break; }
+          }
+          if (!excluded && s[name]) return s[name];
         }
       }
       return null;
@@ -1192,38 +1204,38 @@ class SceWinManager {
         "memory frequency", "dram frequency", "memory speed", "mem freq",
         "system memory multiplier", "memory multiplier", "dram speed",
         "memory clock", "dram clock", "memory ratio",
-      ], "Memory Frequency", "DRAM Frequency", "Memory Speed", "System Memory Multiplier"),
+      ], [], "Memory Frequency", "DRAM Frequency", "Memory Speed", "System Memory Multiplier"),
       casLatency: fuzzyGet([
         "cas latency", "cas# latency", "tcl", "cl value",
         "dram cas# latency", "cas",
-      ], "CAS Latency", "tCL", "CAS# Latency", "DRAM CAS# Latency"),
+      ], [], "CAS Latency", "tCL", "CAS# Latency", "DRAM CAS# Latency"),
       tRCD: fuzzyGet([
         "trcd", "ras to cas", "ras# to cas#", "ras to cas delay",
         "dram ras# to cas# delay", "row address to column address",
-      ], "tRCD", "RAS to CAS Delay", "RAS# to CAS# Delay", "DRAM RAS# to CAS# Delay"),
+      ], [], "tRCD", "RAS to CAS Delay", "RAS# to CAS# Delay", "DRAM RAS# to CAS# Delay"),
       tRP: fuzzyGet([
         "trp", "row precharge", "ras# precharge", "ras precharge",
         "dram ras# pre time",
-      ], "tRP", "Row Precharge Time", "RAS# Precharge", "DRAM RAS# PRE Time"),
+      ], [], "tRP", "Row Precharge Time", "RAS# Precharge", "DRAM RAS# PRE Time"),
       tRAS: fuzzyGet([
         "tras", "ras active", "active to precharge", "ras# act time",
         "dram ras# act time",
-      ], "tRAS", "RAS Active Time", "Active to Precharge Delay", "DRAM RAS# ACT Time"),
+      ], [], "tRAS", "RAS Active Time", "Active to Precharge Delay", "DRAM RAS# ACT Time"),
       xmpProfile: fuzzyGet([
         "ai overclock tuner", "a-xmp", "extreme memory profile",
         "load xmp setting", "memory profile", "xmp profile",
         "system memory multiplier", "d.o.c.p", "docp",
         "expo profile", "expo", "xmp", "dram profile",
-      ], "XMP Profile", "Extreme Memory Profile", "XMP", "Ai Overclock Tuner", "A-XMP"),
+      ], [], "XMP Profile", "Extreme Memory Profile", "XMP", "Ai Overclock Tuner", "A-XMP"),
       memoryVoltage: fuzzyGet([
         "dram voltage", "memory voltage", "dram v", "dimm voltage",
         "dram core voltage", "ddr voltage", "memory vddq",
         "vddq voltage", "sa voltage", "system agent voltage",
-      ], "DRAM Voltage", "Memory Voltage", "DRAM Core Voltage"),
+      ], [], "DRAM Voltage", "Memory Voltage", "DRAM Core Voltage"),
       commandRate: fuzzyGet([
         "command rate", "cmd rate", "command rate mode",
         "dram command rate", "cr mode",
-      ], "Command Rate", "CR", "Cmd Rate", "DRAM Command Rate"),
+      ], [], "Command Rate", "CR", "Cmd Rate", "DRAM Command Rate"),
     };
 
     return { success: true, settings: memSettings };
@@ -1712,23 +1724,37 @@ class AIOverclockEngine {
       const source = hwinfoSensors.source || "VSB/CSV";
       this._log("analyzing", "hwinfo-live", `HWiNFO live readings (${source}) — Temp: ${hwinfoCpuTemp}C | Clock: ${hwinfoClockMHz} MHz | Power: ${hwinfoCpuPower}W`);
 
-      // DIAGNOSTIC: Dump ALL sensor labels and their values so we can identify correct sensors
+      // DIAGNOSTIC: Dump ALL sensor labels with BOTH raw and value strings
+      // The Value string contains the unit (e.g. "50.0 °C") which is critical
+      // for correct sensor type identification
       if (hwinfoSensors.sensors.allSensors) {
         const allLabels = Object.entries(hwinfoSensors.sensors.allSensors);
         this._log("analyzing", "hwinfo-sensor-count", `Total HWiNFO sensors: ${allLabels.length}`);
-        // Log ALL sensors that have "temp" or "cpu" or "gpu" or "clock" or "voltage" in the name
-        const interesting = allLabels.filter(([lbl]) => {
+
+        // Log ALL temperature-related sensors specifically (show Value AND Raw)
+        const tempRelated = allLabels.filter(([lbl, data]) => {
           const l = lbl.toLowerCase();
-          return l.includes("temp") || l.includes("cpu") || l.includes("gpu") ||
-                 l.includes("clock") || l.includes("volt") || l.includes("power") ||
-                 l.includes("core") || l.includes("package") || l.includes("tctl") ||
-                 l.includes("tdie") || l.includes("hot");
+          const v = (data.value || "").toString();
+          return l.includes("temp") || l.includes("cpu") || l.includes("core") ||
+                 l.includes("package") || l.includes("tctl") || l.includes("tdie") ||
+                 v.includes("°C") || v.includes("deg");
         });
-        for (let i = 0; i < interesting.length; i += 5) {
-          const chunk = interesting.slice(i, i + 5)
-            .map(([lbl, data]) => `"${lbl}"=${data.raw || data.value}`)
+        this._log("analyzing", "hwinfo-temp-sensors", `Temperature-related sensors (${tempRelated.length}):`);
+        for (const [lbl, data] of tempRelated) {
+          this._log("analyzing", "hwinfo-temp", `  "${lbl}" → Value="${data.value}" | Raw="${data.raw}"`);
+        }
+
+        // Log other interesting sensors in chunks
+        const other = allLabels.filter(([lbl]) => {
+          const l = lbl.toLowerCase();
+          return l.includes("gpu") || l.includes("clock") || l.includes("volt") ||
+                 l.includes("power") || l.includes("hot") || l.includes("fan");
+        });
+        for (let i = 0; i < other.length; i += 5) {
+          const chunk = other.slice(i, i + 5)
+            .map(([lbl, data]) => `"${lbl}"=Val:"${data.value}"|Raw:"${data.raw}"`)
             .join(" | ");
-          this._log("analyzing", "hwinfo-sensors", `Sensors [${i}]: ${chunk}`);
+          this._log("analyzing", "hwinfo-sensors", `Other [${i}]: ${chunk}`);
         }
       }
     } else {
@@ -2799,11 +2825,22 @@ class AIOverclockEngine {
     // most specific to least specific to avoid false positives.
     // ═══════════════════════════════════════════════════════════════════
 
-    const fuzzyFind = (keywords) => {
-      for (const name of allNames) {
-        const lower = name.toLowerCase();
-        for (const kw of keywords) {
-          if (lower.includes(kw.toLowerCase())) return name;
+    // fuzzyFind with EXCLUDE support: returns the first setting name that
+    // contains any keyword but does NOT contain any exclude term.
+    // This prevents false positives like "IGP Ratio" matching for CPU ratio
+    // or "Loadline Calibration" matching for CPU voltage.
+    const fuzzyFind = (keywords, excludes = []) => {
+      for (const kw of keywords) {
+        const kwLower = kw.toLowerCase();
+        for (const name of allNames) {
+          const lower = name.toLowerCase();
+          if (!lower.includes(kwLower)) continue;
+          // Check exclusions
+          let excluded = false;
+          for (const ex of excludes) {
+            if (lower.includes(ex.toLowerCase())) { excluded = true; break; }
+          }
+          if (!excluded) return name;
         }
       }
       return null;
@@ -2816,19 +2853,22 @@ class AIOverclockEngine {
     // ASRock: "CPU Ratio", "All Core", "Multi"
     // Intel ref: "Processor Core Ratio", "Active Processor Cores"
     // EVGA: "CPU Core Ratio", "All Core Multiplier"
+    //
+    // EXCLUDE: "IGP" (Integrated Graphics), "GT" (Intel iGPU), "Ring" (cache),
+    //          "Uncore", "Memory", "DRAM", "SA" (System Agent), "FCLK"
     this.biosMap.cpuRatio = fuzzyFind([
       "all-core ratio limit", "all core ratio limit", "performance core ratio",
       "adjust cpu ratio", "per core ratio limit",
       "cpu clock ratio", "host clock ratio",
       "all core ratio", "cpu core ratio", "core ratio limit",
-      "p-core ratio", "pcore ratio", "e-core ratio", "ecore ratio",
+      "p-core ratio", "pcore ratio",
       "processor core ratio", "active core ratio",
       "cpu ratio", "core ratio", "frequency ratio",
       "ratio limit", "multiplier", "cpu multi",
       "oc ratio", "overclock ratio",
       "flex ratio", "non-turbo ratio",
-      "max ratio", "ratio",
-    ]);
+      "max ratio",
+    ], ["igp", "gt ratio", "ring", "uncore", "memory", "dram", "sa ", "fclk", "cache", "e-core", "ecore"]);
 
     // CPU voltage / Vcore
     // ASUS: "CPU Core/Cache Voltage", "CPU Core Voltage Override", "CPU SVID Support"
@@ -2837,6 +2877,9 @@ class AIOverclockEngine {
     // ASRock: "CPU Core/Cache Voltage", "Vcore Override Voltage", "CPU Voltage"
     // Intel ref: "Core Voltage Override", "VR Configuration"
     // EVGA: "CPU Vcore Override", "Vcore", "VCore Voltage"
+    //
+    // EXCLUDE: "Loadline", "Calibration", "LLC", "Load Line", "Mode", "SVID",
+    //          "Frequency", "Ratio", "Ring", "SA", "IO", "DRAM", "GT", "PLL"
     this.biosMap.cpuVoltage = fuzzyFind([
       "cpu core/cache voltage", "cpu core voltage override",
       "vcore override voltage", "cpu vcore override",
@@ -2848,9 +2891,9 @@ class AIOverclockEngine {
       "cpu vcore", "core voltage",
       "override voltage", "adaptive voltage",
       "voltage offset", "voltage override",
-      "vcore", "cpu voltage", "cpu v",
-      "vid override", "vid",
-    ]);
+      "vcore", "cpu voltage",
+    ], ["loadline", "calibration", "llc", "load line", "mode", "svid", "frequency",
+        "ratio", "ring", "sa ", "dram", "gt ", "pll", "uncore", "memory", "io "]);
 
     // CPU voltage mode (adaptive vs manual vs offset)
     // ASUS: "CPU Core/Cache Voltage Mode", "SVID Behavior"
@@ -2862,7 +2905,7 @@ class AIOverclockEngine {
       "cpu core voltage mode", "cpu vcore mode",
       "voltage mode", "vcore mode",
       "svid support", "svid control",
-    ]);
+    ], ["loadline", "calibration", "llc", "ratio", "dram"]);
 
     // XMP / EXPO / DOCP memory profile
     // ASUS: "Ai Overclock Tuner", "XMP", "DOCP"
