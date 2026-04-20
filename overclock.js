@@ -445,64 +445,61 @@ class SceWinManager {
       try { fs.unlinkSync(f); } catch(e) {}
     }
 
-    // Strategy: Write a batch file INTO SCEWIN's own directory.
-    // The batch explicitly cd's to its own directory so SCEWIN finds its driver,
-    // pipes "echo." into SCEWIN to bypass "Press any key to continue" pause,
-    // and tries multiple export syntaxes. We elevate the BATCH via
-    // ProcessStartInfo + Verb=RunAs for proper admin context.
+    // Strategy: Elevate POWERSHELL as admin via Verb=RunAs, then from within
+    // that elevated PowerShell, cd to SCEWIN's directory and run it with
+    // echo piped to handle the "Press any key" pause.
     //
-    // Previous approaches failed because:
-    //  - Elevating the exe directly: WorkingDirectory not respected, exit code 16
-    //  - Elevating cmd.exe to run batch: driver wouldn't load
-    //  - Elevating exe with simple filename: WorkingDirectory ignored by UAC
+    // Why this works when other approaches don't:
+    //  - Elevating the EXE directly: driver loads BUT can't pipe stdin (UseShellExecute=true)
+    //    and WorkingDirectory is ignored, so exit code 16 (no output file)
+    //  - Elevating a BAT file: driver WON'T load (different elevation token context)
+    //  - Elevating PowerShell: gets full admin, then runs SCEWIN as a child process
+    //    which inherits the admin token. We CAN pipe stdin and control working dir.
 
-    const batchContent = [
-      "@echo off",
-      // Explicitly cd to scewin dir — critical for driver loading
-      `cd /d "${scewinDir}"`,
-      "",
-      // Attempt 1: /o /s with absolute path, pipe echo to handle "Press any key"
-      `echo [Attempt1] /o /s absolute path >> "${batchLog}"`,
-      `echo. | "${this.scewinPath}" /o /s "${localExportFull}" >> "${batchLog}" 2>&1`,
-      `echo EXIT1:%errorlevel% >> "${batchLog}"`,
-      "",
-      // Attempt 2: /o /s with just filename (relative to working dir)
-      `if not exist "${localExportFull}" (`,
-      `  echo [Attempt2] /o /s relative filename >> "${batchLog}"`,
-      `  echo. | "${scewinExe}" /o /s ${localExport} >> "${batchLog}" 2>&1`,
-      `  echo EXIT2:%errorlevel% >> "${batchLog}"`,
-      `)`,
-      "",
-      // Attempt 3: /o only — some SCEWIN versions output to AMISCE.txt automatically
-      `if not exist "${localExportFull}" if not exist "${amisceOutput}" (`,
-      `  echo [Attempt3] /o only >> "${batchLog}"`,
-      `  echo. | "${scewinExe}" /o >> "${batchLog}" 2>&1`,
-      `  echo EXIT3:%errorlevel% >> "${batchLog}"`,
-      `)`,
-      "",
-      // Attempt 4: /o /lang en /s — some versions need /lang
-      `if not exist "${localExportFull}" if not exist "${amisceOutput}" (`,
-      `  echo [Attempt4] /o /lang en /s >> "${batchLog}"`,
-      `  echo. | "${scewinExe}" /o /lang en /s ${localExport} >> "${batchLog}" 2>&1`,
-      `  echo EXIT4:%errorlevel% >> "${batchLog}"`,
-      `)`,
-      "",
-      // Log what files exist after all attempts
-      `echo [FILES] >> "${batchLog}"`,
-      `dir /b "${scewinDir}\\*.txt" >> "${batchLog}" 2>&1`,
-      `echo [DONE] >> "${batchLog}"`,
-    ].join("\r\n");
+    // Build the inner PowerShell command that will run elevated
+    // Use single quotes for paths inside the -Command string, escape for nesting
+    const psDir = scewinDir.replace(/'/g, "''");
+    const psExe = this.scewinPath.replace(/'/g, "''");
+    const psLocal = localExportFull.replace(/'/g, "''");
+    const psAmisce = amisceOutput.replace(/'/g, "''");
+    const psLogFile = batchLog.replace(/'/g, "''");
 
-    fs.writeFileSync(batchPath, batchContent);
+    // The inner command runs inside elevated PowerShell
+    const innerCmd = [
+      `Set-Location -LiteralPath '${psDir}'`,
+      // Attempt 1: /o /s with absolute path
+      `Add-Content '${psLogFile}' '[Attempt1] /o /s absolute'`,
+      `$out1 = 'Y' | & '${psExe}' /o /s '${psLocal}' 2>&1 | Out-String`,
+      `Add-Content '${psLogFile}' $out1`,
+      `Add-Content '${psLogFile}' \"EXIT1:$LASTEXITCODE\"`,
+      // Attempt 2: /o /s relative filename
+      `if (-not (Test-Path '${psLocal}')) {`,
+      `  Add-Content '${psLogFile}' '[Attempt2] /o /s relative'`,
+      `  $out2 = 'Y' | & './${scewinExe}' /o /s '${localExport}' 2>&1 | Out-String`,
+      `  Add-Content '${psLogFile}' $out2`,
+      `  Add-Content '${psLogFile}' \"EXIT2:$LASTEXITCODE\"`,
+      `}`,
+      // Attempt 3: /o only (default output)
+      `if ((-not (Test-Path '${psLocal}')) -and (-not (Test-Path '${psAmisce}'))) {`,
+      `  Add-Content '${psLogFile}' '[Attempt3] /o only'`,
+      `  $out3 = 'Y' | & './${scewinExe}' /o 2>&1 | Out-String`,
+      `  Add-Content '${psLogFile}' $out3`,
+      `  Add-Content '${psLogFile}' \"EXIT3:$LASTEXITCODE\"`,
+      `}`,
+      // Log files in directory
+      `Add-Content '${psLogFile}' '[FILES]'`,
+      `Get-ChildItem '${psDir}' -Filter *.txt | ForEach-Object { Add-Content '${psLogFile}' $_.Name }`,
+      `Add-Content '${psLogFile}' '[DONE]'`,
+    ].join("; ");
 
-    // Elevate the batch file via ProcessStartInfo + Verb=RunAs
-    // Escaping: double backslashes for PowerShell string
-    const psBatch = batchPath.replace(/\\/g, "\\\\");
+    // Encode the inner command as base64 to avoid quoting hell
+    const encodedCmd = Buffer.from(innerCmd, "utf16le").toString("base64");
 
     const psScript = [
       "try {",
       "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      `  $psi.FileName = "${psBatch}"`,
+      "  $psi.FileName = 'powershell.exe'",
+      `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}'`,
       "  $psi.Verb = 'RunAs'",
       "  $psi.UseShellExecute = $true",
       "  $psi.WindowStyle = 'Normal'",
@@ -510,7 +507,7 @@ class SceWinManager {
       "  $proc.WaitForExit(60000)",
       "  if (!$proc.HasExited) { $proc.Kill() }",
       "  Start-Sleep -Seconds 2",
-      "  Write-Output 'BATCH_DONE'",
+      "  Write-Output 'ELEVATED_PS_DONE'",
       "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
     ].join("\n");
 
@@ -693,27 +690,31 @@ class SceWinManager {
     return settings;
   }
 
-  // Helper: run any SCEWIN command elevated via batch file
+  // Helper: run any SCEWIN command elevated via PowerShell RunAs
   async _runScewinElevated(args, timeout = 45000) {
     const scewinDir = path.dirname(this.scewinPath);
-    const batchPath = path.join(scewinDir, "fn_scewin_cmd.bat");
-    const batchLog = path.join(scewinDir, "fn_scewin_cmd_log.txt");
-    try { fs.unlinkSync(batchLog); } catch(e) {}
+    const logFile = path.join(scewinDir, "fn_scewin_cmd_log.txt");
+    try { fs.unlinkSync(logFile); } catch(e) {}
 
-    const batchContent = [
-      "@echo off",
-      `cd /d "${scewinDir}"`,
-      `echo. | "${this.scewinPath}" ${args} > "${batchLog}" 2>&1`,
-      `echo EXIT_CODE:%errorlevel% >> "${batchLog}"`,
-    ].join("\r\n");
+    // Build inner PowerShell command to run inside elevated session
+    const psDir = scewinDir.replace(/'/g, "''");
+    const psExe = this.scewinPath.replace(/'/g, "''");
+    const psLog = logFile.replace(/'/g, "''");
 
-    fs.writeFileSync(batchPath, batchContent);
+    const innerCmd = [
+      `Set-Location -LiteralPath '${psDir}'`,
+      `$out = 'Y' | & '${psExe}' ${args} 2>&1 | Out-String`,
+      `Add-Content '${psLog}' $out`,
+      `Add-Content '${psLog}' \"EXIT_CODE:$LASTEXITCODE\"`,
+    ].join("; ");
 
-    const psBatch = batchPath.replace(/\\/g, "\\\\");
+    const encodedCmd = Buffer.from(innerCmd, "utf16le").toString("base64");
+
     const psScript = [
       "try {",
       "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      `  $psi.FileName = "${psBatch}"`,
+      "  $psi.FileName = 'powershell.exe'",
+      `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}'`,
       "  $psi.Verb = 'RunAs'",
       "  $psi.UseShellExecute = $true",
       "  $psi.WindowStyle = 'Normal'",
@@ -727,7 +728,7 @@ class SceWinManager {
 
     const result = await runPS(psScript, timeout + 15000);
     let log = "";
-    try { log = fs.readFileSync(batchLog, "utf8"); } catch(e) {}
+    try { log = fs.readFileSync(logFile, "utf8"); } catch(e) {}
     const exitMatch = log.match(/EXIT_CODE:(\d+)/);
     const exitCode = exitMatch ? parseInt(exitMatch[1]) : -1;
 
