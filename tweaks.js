@@ -211,12 +211,150 @@ const MEMORY_TWEAKS = [
   },
 ];
 
+// ── Network Tweaks (Registry-Reinforced) ────────────────────────────
+const NETWORK_TWEAKS = [
+  {
+    id: "net-throttle", name: "Disable Network Throttling",
+    desc: "Windows throttles network throughput for multimedia playback. Set to max (0xFFFFFFFF) to remove the limit entirely.",
+    check: 'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile" /v NetworkThrottlingIndex 2>nul',
+    checkValue: "0xffffffff",
+    cmd: 'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f',
+  },
+  {
+    id: "net-qos", name: "Remove QoS Reserved Bandwidth",
+    desc: "Windows reserves 20% of your bandwidth for QoS by default. Set to 0 to reclaim it all.",
+    check: 'reg query "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Psched" /v NonBestEffortLimit 2>nul',
+    checkValue: "0x0",
+    cmd: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Psched" /v NonBestEffortLimit /t REG_DWORD /d 0 /f',
+  },
+  {
+    id: "nagle-disable", name: "Disable Nagle's Algorithm (All Adapters)",
+    desc: "Nagle's algorithm buffers small packets to send them together. Great for throughput, terrible for gaming latency. Disables on all network interfaces.",
+    check: 'powershell -NoProfile -Command "$found=$false; Get-ChildItem \'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\' | ForEach-Object { $v=(Get-ItemProperty $_.PSPath -Name TcpAckFrequency -ErrorAction SilentlyContinue).TcpAckFrequency; if($v -eq 1){$found=$true} }; if($found){\'TcpAckFrequency    REG_DWORD    0x1\'}" 2>nul',
+    checkValue: "0x1",
+    cmd: [
+      'powershell -NoProfile -Command "Get-ChildItem \'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\' | ForEach-Object {',
+      "  Set-ItemProperty $_.PSPath -Name TcpAckFrequency -Value 1 -Type DWord -Force;",
+      "  Set-ItemProperty $_.PSPath -Name TCPNoDelay -Value 1 -Type DWord -Force;",
+      "  Set-ItemProperty $_.PSPath -Name TcpDelAckTicks -Value 0 -Type DWord -Force;",
+      '}"'
+    ].join(" "),
+    reboot: true,
+  },
+  {
+    id: "tcp-timestamps", name: "Disable TCP Timestamps",
+    desc: "TCP timestamps add 12 bytes to every packet header. Disabling saves bandwidth and reduces latency slightly.",
+    check: 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v Tcp1323Opts 2>nul',
+    checkValue: "0x0",
+    cmd: 'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v Tcp1323Opts /t REG_DWORD /d 0 /f',
+    reboot: true,
+  },
+  {
+    id: "tcp-autotune", name: "TCP Auto-Tuning (Experimental)",
+    desc: "Sets Windows TCP receive window auto-tuning to experimental mode for aggressive throughput scaling. Registry-backed.",
+    check: 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Services\\AFD\\Parameters" /v EnableDCA 2>nul',
+    checkValue: "0x1",
+    cmd: 'netsh int tcp set global autotuninglevel=experimental && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\AFD\\Parameters" /v EnableDCA /t REG_DWORD /d 1 /f && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\AFD\\Parameters" /v DefaultReceiveWindow /t REG_DWORD /d 65536 /f && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\AFD\\Parameters" /v DefaultSendWindow /t REG_DWORD /d 65536 /f',
+  },
+  {
+    id: "rss-enable", name: "Enable Receive Side Scaling (RSS)",
+    desc: "Distributes network processing across multiple CPU cores instead of just one. Huge for high-bandwidth connections.",
+    check: 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Services\\NDIS\\Parameters" /v RssBaseCpu 2>nul',
+    checkValue: "0x0",
+    cmd: 'netsh int tcp set global rss=enabled && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\NDIS\\Parameters" /v RssBaseCpu /t REG_DWORD /d 0 /f',
+  },
+  {
+    id: "ecn-enable", name: "Enable ECN (Explicit Congestion Notification)",
+    desc: "Lets routers signal congestion before dropping packets. Reduces packet loss during peak hours.",
+    check: 'netsh int tcp show global 2>nul | findstr /i "ECN"',
+    checkValue: "enabled",
+    cmd: 'netsh int tcp set global ecncapability=enabled',
+  },
+  {
+    id: "net-direct-cache", name: "Optimize DNS Client Cache",
+    desc: "Increases DNS cache size and TTL so resolved addresses stick around longer. Fewer DNS lookups during gameplay.",
+    check: 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters" /v MaxCacheEntryTtlLimit 2>nul',
+    checkValue: "0xff00",
+    cmd: 'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters" /v MaxCacheEntryTtlLimit /t REG_DWORD /d 65280 /f && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters" /v MaxCacheTtl /t REG_DWORD /d 65280 /f && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters" /v MaxNegativeCacheTtl /t REG_DWORD /d 0 /f',
+  },
+  {
+    id: "net-tasks-offload", name: "Enable TCP/IP Task Offloading",
+    desc: "Offloads TCP checksum and segmentation to your NIC hardware. Frees CPU cycles for your game.",
+    check: 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v EnableTCPChimney 2>nul',
+    checkValue: "0x1",
+    cmd: 'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v EnableTCPChimney /t REG_DWORD /d 1 /f && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v EnableTCPA /t REG_DWORD /d 1 /f && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v EnableRSS /t REG_DWORD /d 1 /f',
+    reboot: true,
+  },
+  {
+    id: "net-port-range", name: "Expand Ephemeral Port Range",
+    desc: "Default Windows port range is tiny (16384 ports). Expanding to 64511 prevents port exhaustion during heavy network load.",
+    check: 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v MaxUserPort 2>nul',
+    checkValue: "0xfffe",
+    cmd: 'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v MaxUserPort /t REG_DWORD /d 65534 /f && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v TcpTimedWaitDelay /t REG_DWORD /d 30 /f',
+  },
+  {
+    id: "net-congestion", name: "Set TCP Congestion Provider (CTCP)",
+    desc: "Compound TCP is more aggressive than default CUBIC. Better for low-latency gaming connections.",
+    check: 'netsh int tcp show supplemental 2>nul | findstr /i "ctcp"',
+    checkValue: "ctcp",
+    cmd: 'netsh int tcp set supplemental template=custom icw=10 && netsh int tcp set security mpp=disabled profiles=disabled && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Nsi\\{eb004a03-9b1a-11d4-9123-0050047759bc}\\26" /v 0020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 /t REG_BINARY /d 0000000000000000000000000000000000000000050000000000000000000000 /f 2>nul & netsh int tcp set global congestionprovider=ctcp 2>nul',
+  },
+  {
+    id: "net-adapter-power", name: "Disable NIC Power Saving",
+    desc: "Prevents Windows from putting your network adapter to sleep. Eliminates random lag spikes from adapter wake-up.",
+    check: 'powershell -NoProfile -Command "$a=Get-NetAdapter|Select -First 1; if($a){$p=Get-NetAdapterPowerManagement $a.Name -ErrorAction SilentlyContinue; if($p -and $p.AllowComputerToTurnOffDevice -eq \'Disabled\'){\'Disabled\'}}" 2>nul',
+    checkValue: "Disabled",
+    cmd: 'powershell -NoProfile -Command "Get-NetAdapter | ForEach-Object { $pm = Get-NetAdapterPowerManagement $_.Name -ErrorAction SilentlyContinue; if($pm) { $pm.AllowComputerToTurnOffDevice = \'Disabled\'; $pm | Set-NetAdapterPowerManagement -ErrorAction SilentlyContinue } }"',
+  },
+  {
+    id: "net-interrupt-mod", name: "Reduce NIC Interrupt Moderation",
+    desc: "Lower interrupt moderation = faster packet processing at the cost of slightly more CPU usage. Worth it for gaming.",
+    check: 'powershell -NoProfile -Command "$a=Get-NetAdapterAdvancedProperty -Name * -RegistryKeyword \'*InterruptModeration\' -ErrorAction SilentlyContinue|Select -First 1; if($a){$a.RegistryValue}" 2>nul',
+    checkValue: "0",
+    cmd: 'powershell -NoProfile -Command "Get-NetAdapter | ForEach-Object { Set-NetAdapterAdvancedProperty $_.Name -RegistryKeyword \'*InterruptModeration\' -RegistryValue 0 -ErrorAction SilentlyContinue }"',
+  },
+];
+
+// ── Power Plan Tweaks ───────────────────────────────────────────────
+const POWER_TWEAKS = [
+  {
+    id: "ultimate-power", name: "Ultimate Performance Power Plan",
+    desc: "Hidden power plan that eliminates all power-saving micro-delays. Must be unlocked first, then activated.",
+    check: 'powercfg /getactivescheme 2>nul | findstr /i "e9a42b02"',
+    checkValue: "e9a42b02",
+    cmd: 'powercfg -duplicatescheme e9a42b02-d5c7-4dc3-b093-2168ee1b6c3 2>nul & powercfg /setactive e9a42b02-d5c7-4dc3-b093-2168ee1b6c3 2>nul || (powercfg -duplicatescheme 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 99999999-9999-9999-9999-999999999999 & powercfg /setactive 99999999-9999-9999-9999-999999999999)',
+  },
+  {
+    id: "usb-suspend", name: "Disable USB Selective Suspend",
+    desc: "Prevents Windows from suspending USB devices to save power. Eliminates random input drops on mice and keyboards.",
+    check: 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Services\\USB" /v DisableSelectiveSuspend 2>nul',
+    checkValue: "0x1",
+    cmd: 'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\USB" /v DisableSelectiveSuspend /t REG_DWORD /d 1 /f && powercfg -setacvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 && powercfg -setactive scheme_current',
+  },
+  {
+    id: "pci-link-state", name: "Disable PCI Express Link State Power Management",
+    desc: "ASPM power saving on PCIe adds latency to GPU and NVMe. Disable for consistent device response times.",
+    check: 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power\\PowerSettings\\501a4d13-42af-4f0e-9fb8-0a80e12065f5" /v Attributes 2>nul',
+    checkValue: "0x0",
+    cmd: 'powercfg -setacvalueindex scheme_current 501a4d13-42af-4f0e-9fb8-0a80e12065f5 ee12f906-d277-404b-b6da-e5fa1a576df5 0 && powercfg -setactive scheme_current && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power\\PowerSettings\\501a4d13-42af-4f0e-9fb8-0a80e12065f5" /v Attributes /t REG_DWORD /d 0 /f',
+  },
+  {
+    id: "hibernate-off", name: "Disable Hibernation",
+    desc: "Hibernation reserves GBs of disk for hiberfil.sys and can cause resume lag. Disable on gaming PCs.",
+    check: 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power" /v HibernateEnabled 2>nul',
+    checkValue: "0x0",
+    cmd: 'powercfg /hibernate off && reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power" /v HibernateEnabled /t REG_DWORD /d 0 /f',
+  },
+];
+
 // ── All Categories ──────────────────────────────────────────────────
 const ALL_CATEGORIES = {
   gpu: { name: "GPU & Display", icon: "\u{1F3AE}", tweaks: GPU_TWEAKS },
   input: { name: "Input & Mouse", icon: "\u{1F5B1}\uFE0F", tweaks: INPUT_TWEAKS },
   cpu: { name: "CPU & Scheduler", icon: "\u{2699}\uFE0F", tweaks: CPU_TWEAKS },
   memory: { name: "Memory & Disk", icon: "\u{1F4BE}", tweaks: MEMORY_TWEAKS },
+  network: { name: "Network & TCP", icon: "\u{1F310}", tweaks: NETWORK_TWEAKS },
+  power: { name: "Power Plan", icon: "\u{26A1}", tweaks: POWER_TWEAKS },
 };
 
 // ── Module Class ─────────────────────────────────────────────────────

@@ -434,84 +434,94 @@ class SceWinManager {
 
     const scewinDir = path.dirname(this.scewinPath);
     const scewinExe = path.basename(this.scewinPath);
-
-    // Get help output for debugging
-    let helpOutput = "";
-    const helpResult = await runCmd(`cd /d "${scewinDir}" && "${scewinExe}" /? 2>&1`, 10000);
-    if (helpResult.output) helpOutput = helpResult.output;
-    this._lastHelpOutput = helpOutput;
-
-    // AMISCE requires a kernel driver to read UEFI/BIOS variables.
-    // The "Unable to load driver" error means it MUST run as Administrator.
-    // We use a batch file approach that triggers a proper UAC elevation prompt.
-
-    // The correct syntax from AMISCE 5.x help:
-    //   SCEWIN /o /s <NVRAM Script File>
-    // /o = output/export mode, /s = script file path
-
-    const batchPath = path.join(dir, "scewin-export.bat");
-    const logPath = path.join(dir, "scewin-export-log.txt");
+    const localExport = "fn_export.txt";
+    const localExportFull = path.join(scewinDir, localExport);
     const amisceOutput = path.join(scewinDir, "AMISCE.txt");
+    const batchPath = path.join(scewinDir, "fn_do_export.bat");
+    const batchLog = path.join(scewinDir, "fn_export_log.txt");
 
     // Clean up old files
-    for (const f of [exportPath, batchPath, logPath, amisceOutput]) {
+    for (const f of [exportPath, localExportFull, amisceOutput, batchPath, batchLog]) {
       try { fs.unlinkSync(f); } catch(e) {}
     }
 
-    // SCEWIN works from admin CMD but needs true elevation for its kernel driver.
-    // Previous approaches (batch + Start-Process -Verb RunAs -WindowStyle Hidden)
-    // failed because the elevation wasn't being granted properly.
+    // Strategy: Write a batch file INTO SCEWIN's own directory.
+    // The batch explicitly cd's to its own directory so SCEWIN finds its driver,
+    // pipes "echo." into SCEWIN to bypass "Press any key to continue" pause,
+    // and tries multiple export syntaxes. We elevate the BATCH via
+    // ProcessStartInfo + Verb=RunAs for proper admin context.
     //
-    // New approach: Run SCEWIN_64.exe directly via elevated PowerShell, with
-    // stdin redirected from NUL to bypass "Press any key to continue" pause.
+    // Previous approaches failed because:
+    //  - Elevating the exe directly: WorkingDirectory not respected, exit code 16
+    //  - Elevating cmd.exe to run batch: driver wouldn't load
+    //  - Elevating exe with simple filename: WorkingDirectory ignored by UAC
 
-    // Method 1: Direct elevated execution via PowerShell
-    // -Verb RunAs on the exe directly (not through cmd/batch)
-    // -WindowStyle Normal so UAC prompt is visible
-    // Export to a simple filename in SCEWIN's own directory to avoid path issues,
-    // then copy to our desired location afterward.
-    const localExport = "fn_export.txt";
-    const localExportFull = path.join(scewinDir, localExport);
-    try { fs.unlinkSync(localExportFull); } catch(e) {}
+    const batchContent = [
+      "@echo off",
+      // Explicitly cd to scewin dir — critical for driver loading
+      `cd /d "${scewinDir}"`,
+      "",
+      // Attempt 1: /o /s with absolute path, pipe echo to handle "Press any key"
+      `echo [Attempt1] /o /s absolute path >> "${batchLog}"`,
+      `echo. | "${this.scewinPath}" /o /s "${localExportFull}" >> "${batchLog}" 2>&1`,
+      `echo EXIT1:%errorlevel% >> "${batchLog}"`,
+      "",
+      // Attempt 2: /o /s with just filename (relative to working dir)
+      `if not exist "${localExportFull}" (`,
+      `  echo [Attempt2] /o /s relative filename >> "${batchLog}"`,
+      `  echo. | "${scewinExe}" /o /s ${localExport} >> "${batchLog}" 2>&1`,
+      `  echo EXIT2:%errorlevel% >> "${batchLog}"`,
+      `)`,
+      "",
+      // Attempt 3: /o only — some SCEWIN versions output to AMISCE.txt automatically
+      `if not exist "${localExportFull}" if not exist "${amisceOutput}" (`,
+      `  echo [Attempt3] /o only >> "${batchLog}"`,
+      `  echo. | "${scewinExe}" /o >> "${batchLog}" 2>&1`,
+      `  echo EXIT3:%errorlevel% >> "${batchLog}"`,
+      `)`,
+      "",
+      // Attempt 4: /o /lang en /s — some versions need /lang
+      `if not exist "${localExportFull}" if not exist "${amisceOutput}" (`,
+      `  echo [Attempt4] /o /lang en /s >> "${batchLog}"`,
+      `  echo. | "${scewinExe}" /o /lang en /s ${localExport} >> "${batchLog}" 2>&1`,
+      `  echo EXIT4:%errorlevel% >> "${batchLog}"`,
+      `)`,
+      "",
+      // Log what files exist after all attempts
+      `echo [FILES] >> "${batchLog}"`,
+      `dir /b "${scewinDir}\\*.txt" >> "${batchLog}" 2>&1`,
+      `echo [DONE] >> "${batchLog}"`,
+    ].join("\r\n");
 
-    // Also clean AMISCE.txt in case /o without /s creates it there
-    try { fs.unlinkSync(amisceOutput); } catch(e) {}
+    fs.writeFileSync(batchPath, batchContent);
 
-    // Build escaped path strings for PowerShell (use forward slashes to avoid escape issues)
-    const psScewinExe = this.scewinPath.replace(/\\/g, "/");
-    const psScewinDir2 = scewinDir.replace(/\\/g, "/");
+    // Elevate the batch file via ProcessStartInfo + Verb=RunAs
+    // Escaping: double backslashes for PowerShell string
+    const psBatch = batchPath.replace(/\\/g, "\\\\");
 
     const psScript = [
       "try {",
       "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      '  $psi.FileName = "' + psScewinExe + '"',
-      '  $psi.Arguments = "/o /s ' + localExport + '"',
-      '  $psi.WorkingDirectory = "' + psScewinDir2 + '"',
+      `  $psi.FileName = "${psBatch}"`,
       "  $psi.Verb = 'RunAs'",
       "  $psi.UseShellExecute = $true",
       "  $psi.WindowStyle = 'Normal'",
       "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      "  $proc.WaitForExit(45000)",
+      "  $proc.WaitForExit(60000)",
       "  if (!$proc.HasExited) { $proc.Kill() }",
-      "  Start-Sleep -Seconds 3",
-      "  Write-Output \"ExitCode:$($proc.ExitCode)\"",
-      '  $localFile = "' + psScewinDir2 + '/' + localExport + '"',
-      '  $amisceFile = "' + psScewinDir2 + '/AMISCE.txt"',
-      "  if (Test-Path $localFile) { Write-Output 'FOUND_LOCAL' }",
-      "  elseif (Test-Path $amisceFile) { Write-Output 'FOUND_AMISCE' }",
-      "  else {",
-      "    Write-Output 'NO_FILE'",
-      '    Write-Output "Files in dir:"',
-      '    Get-ChildItem "' + psScewinDir2 + '" -Filter *.txt | ForEach-Object { Write-Output $_.Name }',
-      "  }",
+      "  Start-Sleep -Seconds 2",
+      "  Write-Output 'BATCH_DONE'",
       "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
     ].join("\n");
 
-    const elevatedResult = await runPS(psScript, 60000);
+    const elevatedResult = await runPS(psScript, 75000);
 
-    this._lastElevatedResult = elevatedResult;
-    let logContent = elevatedResult.output || elevatedResult.error || "no output";
+    // Read the batch log for diagnostics
+    let logContent = "";
+    try { logContent = fs.readFileSync(batchLog, "utf8"); } catch(e) {}
+    if (!logContent) logContent = elevatedResult.output || elevatedResult.error || "no output";
     this._lastExportLog = logContent;
+    this._lastElevatedResult = elevatedResult;
 
     // Check for export file in multiple locations
     // The "Press any key" pause means process might linger — give extra time
@@ -683,6 +693,47 @@ class SceWinManager {
     return settings;
   }
 
+  // Helper: run any SCEWIN command elevated via batch file
+  async _runScewinElevated(args, timeout = 45000) {
+    const scewinDir = path.dirname(this.scewinPath);
+    const batchPath = path.join(scewinDir, "fn_scewin_cmd.bat");
+    const batchLog = path.join(scewinDir, "fn_scewin_cmd_log.txt");
+    try { fs.unlinkSync(batchLog); } catch(e) {}
+
+    const batchContent = [
+      "@echo off",
+      `cd /d "${scewinDir}"`,
+      `echo. | "${this.scewinPath}" ${args} > "${batchLog}" 2>&1`,
+      `echo EXIT_CODE:%errorlevel% >> "${batchLog}"`,
+    ].join("\r\n");
+
+    fs.writeFileSync(batchPath, batchContent);
+
+    const psBatch = batchPath.replace(/\\/g, "\\\\");
+    const psScript = [
+      "try {",
+      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+      `  $psi.FileName = "${psBatch}"`,
+      "  $psi.Verb = 'RunAs'",
+      "  $psi.UseShellExecute = $true",
+      "  $psi.WindowStyle = 'Normal'",
+      "  $proc = [System.Diagnostics.Process]::Start($psi)",
+      `  $proc.WaitForExit(${timeout})`,
+      "  if (!$proc.HasExited) { $proc.Kill() }",
+      "  Start-Sleep -Seconds 1",
+      "  Write-Output 'DONE'",
+      "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
+    ].join("\n");
+
+    const result = await runPS(psScript, timeout + 15000);
+    let log = "";
+    try { log = fs.readFileSync(batchLog, "utf8"); } catch(e) {}
+    const exitMatch = log.match(/EXIT_CODE:(\d+)/);
+    const exitCode = exitMatch ? parseInt(exitMatch[1]) : -1;
+
+    return { success: exitCode === 0, exitCode, log, psOutput: result.output, psError: result.error };
+  }
+
   async readSetting(name) {
     if (!this.available) return { success: false, error: "SceWin not found" };
 
@@ -708,12 +759,12 @@ class SceWinManager {
     if (!current.success) return current;
 
     const hexValue = typeof value === "number" ? "0x" + value.toString(16) : value;
-    const r = await runCmd(`"${this.scewinPath}" /i /s "${SCEWIN_EXPORT_PATH}" /n "${name}" /v ${hexValue}`, 30000);
+    const r = await this._runScewinElevated(`/i /s "${SCEWIN_EXPORT_PATH}" /n "${name}" /v ${hexValue}`, 30000);
 
     // Log the change
     this._logChange(name, current.value, hexValue);
 
-    if (!r.success) return { success: false, error: r.error };
+    if (!r.success) return { success: false, error: r.log || `Exit code: ${r.exitCode}` };
 
     // Invalidate cache so next read picks up changes
     this.currentSettings = null;
@@ -922,8 +973,8 @@ class SceWinManager {
     const dir = path.dirname(SCEWIN_BACKUP_PATH);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    const r = await runCmd(`"${this.scewinPath}" /o /s "${SCEWIN_BACKUP_PATH}"`, 30000);
-    if (!r.success) return { success: false, error: r.error };
+    const r = await this._runScewinElevated(`/o /s "${SCEWIN_BACKUP_PATH}"`, 30000);
+    if (!r.success) return { success: false, error: r.log || `Exit code: ${r.exitCode}` };
 
     return { success: true, backupPath: SCEWIN_BACKUP_PATH, timestamp: new Date().toISOString() };
   }
@@ -934,8 +985,8 @@ class SceWinManager {
       return { success: false, error: "No backup found to restore" };
     }
 
-    const r = await runCmd(`"${this.scewinPath}" /i /s "${SCEWIN_BACKUP_PATH}"`, 30000);
-    if (!r.success) return { success: false, error: r.error };
+    const r = await this._runScewinElevated(`/i /s "${SCEWIN_BACKUP_PATH}"`, 30000);
+    if (!r.success) return { success: false, error: r.log || `Exit code: ${r.exitCode}` };
 
     this.currentSettings = null;
     this._logChange("RESTORE_BACKUP", "N/A", "Restored from " + SCEWIN_BACKUP_PATH);
