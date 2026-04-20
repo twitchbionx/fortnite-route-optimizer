@@ -437,200 +437,238 @@ class SceWinManager {
     const localExport = "fn_export.txt";
     const localExportFull = path.join(scewinDir, localExport);
     const amisceOutput = path.join(scewinDir, "AMISCE.txt");
-    const batchPath = path.join(scewinDir, "fn_do_export.bat");
-    const batchLog = path.join(scewinDir, "fn_export_log.txt");
+    const logFile = path.join(scewinDir, "fn_export_log.txt");
 
     // Clean up old files
-    for (const f of [exportPath, localExportFull, amisceOutput, batchPath, batchLog]) {
+    for (const f of [exportPath, localExportFull, amisceOutput, logFile]) {
       try { fs.unlinkSync(f); } catch(e) {}
     }
-
-    // Strategy: Elevate PowerShell as admin, then from inside elevated PS,
-    // launch SCEWIN via ProcessStartInfo with UseShellExecute=$false.
-    // This lets us redirect stdin (handle "Press any key") AND the process
-    // inherits admin token directly from the elevated PowerShell parent.
-    //
-    // Critically: we do NOT use cmd /c or & operator. We use .NET ProcessStartInfo
-    // inside the elevated PS to launch SCEWIN directly. This gives SCEWIN the
-    // closest possible context to being the elevated process itself.
-    //
-    // Previous failures:
-    //  v3.7.x: Elevate exe directly → driver loads, but UseShellExecute=true means
-    //           no stdin redirect + WorkingDirectory ignored → exit code 16
-    //  v3.8.1: Elevate batch → driver won't load
-    //  v3.8.2: Elevate PS → & operator → NativeCommandError from stderr
-    //  v3.8.3: Elevate PS → cmd /c → driver won't load (cmd strips privileges?)
-
-    const psLogFile = batchLog.replace(/\\/g, "\\\\").replace(/'/g, "''");
-    const psExePath = this.scewinPath.replace(/\\/g, "\\\\").replace(/'/g, "''");
-    const psScewinDir = scewinDir.replace(/\\/g, "\\\\").replace(/'/g, "''");
-    const psLocalFull = localExportFull.replace(/\\/g, "\\\\").replace(/'/g, "''");
-    const psAmiscePath = amisceOutput.replace(/\\/g, "\\\\").replace(/'/g, "''");
-
-    // Inner PS command: use .NET ProcessStartInfo to launch SCEWIN with stdin redirect
-    const innerCmd = [
-      "$ErrorActionPreference = 'Continue'",
-      `Add-Content '${psLogFile}' '[Elevated PS starting]'`,
-      "",
-      "# Attempt 1: /o /s with absolute path, stdin redirected",
-      `Add-Content '${psLogFile}' '[Attempt1] ProcessStartInfo /o /s absolute'`,
-      "try {",
-      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      `  $psi.FileName = '${psExePath}'`,
-      `  $psi.Arguments = '/o /s ""${psLocalFull}""'`,
-      `  $psi.WorkingDirectory = '${psScewinDir}'`,
-      "  $psi.UseShellExecute = $false",
-      "  $psi.RedirectStandardInput = $true",
-      "  $psi.RedirectStandardOutput = $true",
-      "  $psi.RedirectStandardError = $true",
-      "  $psi.CreateNoWindow = $false",
-      "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      "  Start-Sleep -Milliseconds 500",
-      "  $proc.StandardInput.WriteLine('')",
-      "  $proc.StandardInput.Close()",
-      "  $stdout = $proc.StandardOutput.ReadToEnd()",
-      "  $stderr = $proc.StandardError.ReadToEnd()",
-      "  $proc.WaitForExit(30000)",
-      `  Add-Content '${psLogFile}' "stdout: $stdout"`,
-      `  Add-Content '${psLogFile}' "stderr: $stderr"`,
-      `  Add-Content '${psLogFile}' "EXIT1:$($proc.ExitCode)"`,
-      "} catch {",
-      `  Add-Content '${psLogFile}' "ERROR1: $($_.Exception.Message)"`,
-      "}",
-      "",
-      "# Attempt 2: /o /s with simple filename",
-      `if (-not (Test-Path '${psLocalFull}')) {`,
-      `  Add-Content '${psLogFile}' '[Attempt2] /o /s relative filename'`,
-      "  try {",
-      "    $psi2 = New-Object System.Diagnostics.ProcessStartInfo",
-      `    $psi2.FileName = '${psExePath}'`,
-      `    $psi2.Arguments = '/o /s ${localExport}'`,
-      `    $psi2.WorkingDirectory = '${psScewinDir}'`,
-      "    $psi2.UseShellExecute = $false",
-      "    $psi2.RedirectStandardInput = $true",
-      "    $psi2.RedirectStandardOutput = $true",
-      "    $psi2.RedirectStandardError = $true",
-      "    $proc2 = [System.Diagnostics.Process]::Start($psi2)",
-      "    Start-Sleep -Milliseconds 500",
-      "    $proc2.StandardInput.WriteLine('')",
-      "    $proc2.StandardInput.Close()",
-      "    $out2 = $proc2.StandardOutput.ReadToEnd()",
-      "    $err2 = $proc2.StandardError.ReadToEnd()",
-      "    $proc2.WaitForExit(30000)",
-      `    Add-Content '${psLogFile}' "stdout2: $out2"`,
-      `    Add-Content '${psLogFile}' "stderr2: $err2"`,
-      `    Add-Content '${psLogFile}' "EXIT2:$($proc2.ExitCode)"`,
-      "  } catch {",
-      `    Add-Content '${psLogFile}' "ERROR2: $($_.Exception.Message)"`,
-      "  }",
-      "}",
-      "",
-      "# Attempt 3: /o only (default AMISCE.txt output)",
-      `if ((-not (Test-Path '${psLocalFull}')) -and (-not (Test-Path '${psAmiscePath}'))) {`,
-      `  Add-Content '${psLogFile}' '[Attempt3] /o only'`,
-      "  try {",
-      "    $psi3 = New-Object System.Diagnostics.ProcessStartInfo",
-      `    $psi3.FileName = '${psExePath}'`,
-      "    $psi3.Arguments = '/o'",
-      `    $psi3.WorkingDirectory = '${psScewinDir}'`,
-      "    $psi3.UseShellExecute = $false",
-      "    $psi3.RedirectStandardInput = $true",
-      "    $psi3.RedirectStandardOutput = $true",
-      "    $psi3.RedirectStandardError = $true",
-      "    $proc3 = [System.Diagnostics.Process]::Start($psi3)",
-      "    Start-Sleep -Milliseconds 500",
-      "    $proc3.StandardInput.WriteLine('')",
-      "    $proc3.StandardInput.Close()",
-      "    $out3 = $proc3.StandardOutput.ReadToEnd()",
-      "    $err3 = $proc3.StandardError.ReadToEnd()",
-      "    $proc3.WaitForExit(30000)",
-      `    Add-Content '${psLogFile}' "stdout3: $out3"`,
-      `    Add-Content '${psLogFile}' "stderr3: $err3"`,
-      `    Add-Content '${psLogFile}' "EXIT3:$($proc3.ExitCode)"`,
-      "  } catch {",
-      `    Add-Content '${psLogFile}' "ERROR3: $($_.Exception.Message)"`,
-      "  }",
-      "}",
-      "",
-      "# Log files in directory",
-      `Add-Content '${psLogFile}' '[FILES]'`,
-      `Get-ChildItem '${psScewinDir}' -Filter *.txt | ForEach-Object { Add-Content '${psLogFile}' $_.Name }`,
-      "# Also check System32 in case file ended up there",
-      `Add-Content '${psLogFile}' '[FILES_SYS32]'`,
-      "Get-ChildItem 'C:\\\\Windows\\\\System32' -Filter 'fn_export*' -ErrorAction SilentlyContinue | ForEach-Object { Add-Content '" + psLogFile + "' $_.FullName }",
-      "Get-ChildItem 'C:\\\\Windows\\\\System32' -Filter 'AMISCE*' -ErrorAction SilentlyContinue | ForEach-Object { Add-Content '" + psLogFile + "' $_.FullName }",
-      `Add-Content '${psLogFile}' '[DONE]'`,
-    ].join("\n");
-
-    // Encode as base64 for clean passing to elevated PowerShell
-    const encodedCmd = Buffer.from(innerCmd, "utf16le").toString("base64");
-
-    const psScript = [
-      "try {",
-      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      "  $psi.FileName = 'powershell.exe'",
-      `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}'`,
-      "  $psi.Verb = 'RunAs'",
-      "  $psi.UseShellExecute = $true",
-      "  $psi.WindowStyle = 'Normal'",
-      "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      "  $proc.WaitForExit(90000)",
-      "  if (!$proc.HasExited) { $proc.Kill() }",
-      "  Start-Sleep -Seconds 2",
-      "  Write-Output 'ELEVATED_PS_DONE'",
-      "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
-    ].join("\n");
-
-    const elevatedResult = await runPS(psScript, 75000);
-
-    // Read the batch log for diagnostics
-    let logContent = "";
-    try { logContent = fs.readFileSync(batchLog, "utf8"); } catch(e) {}
-    if (!logContent) logContent = elevatedResult.output || elevatedResult.error || "no output";
-    this._lastExportLog = logContent;
-    this._lastElevatedResult = elevatedResult;
-
-    // Check for export file in multiple locations
-    // The "Press any key" pause means process might linger — give extra time
-    for (let wait = 0; wait < 5; wait++) {
-      // Check our local export in scewin dir
-      if (fs.existsSync(localExportFull)) {
-        try { fs.copyFileSync(localExportFull, exportPath); } catch(e) {}
-        break;
-      }
-      // Check AMISCE.txt in scewin dir
-      if (fs.existsSync(amisceOutput)) {
-        try { fs.copyFileSync(amisceOutput, exportPath); } catch(e) {}
-        break;
-      }
-      // Check our target path directly
-      if (fs.existsSync(exportPath)) break;
-      await new Promise(r => setTimeout(r, 2000));
+    // Also clean System32 copies from previous runs
+    for (const name of [localExport, "AMISCE.txt"]) {
+      try { fs.unlinkSync(path.join("C:\\Windows\\System32", name)); } catch(e) {}
     }
 
-    // Check if export file was created
-    const checkFiles = [exportPath, localExportFull, amisceOutput];
+    // ═══════════════════════════════════════════════════════════════════
+    // Strategy v3.8.5: Windows Scheduled Task running as SYSTEM
+    //
+    // The AMISCE driver ONLY loads when:
+    //  - The exe is elevated via UAC (Verb=RunAs, UseShellExecute=true)
+    //  - OR the process runs as NT AUTHORITY\SYSTEM
+    //
+    // Every child-process approach fails (cmd /c, batch, ProcessStartInfo)
+    // because they don't give SCEWIN the right elevation context.
+    //
+    // Solution: Create a scheduled task that runs as SYSTEM with highest
+    // privileges. The task command pipes empty input to handle "Press any
+    // key" and redirects output to a log. SYSTEM has full kernel access
+    // so the driver will load. We trigger the task, wait, then read output.
+    //
+    // Fallback: If scheduled task fails, try direct exe elevation with
+    // UseShellExecute=true (driver loads but process hangs on "Press any
+    // key" — we kill it after delay and search for the output file).
+    // ═══════════════════════════════════════════════════════════════════
 
-    // Also scan for any new .txt files in SceWin dir
+    const taskName = "FNOptSceWinExport";
+    const logPath = logFile.replace(/\\/g, "\\\\");
+
+    // ── Method 1: Scheduled Task as SYSTEM ──
+    let method1Success = false;
+    try {
+      // Build batch script that the task will run
+      const batchPath = path.join(scewinDir, "fn_task_export.bat");
+      const batchContent = [
+        "@echo off",
+        `cd /d "${scewinDir}"`,
+        `echo [TASK_START] >> "${logFile}"`,
+        `echo. | "${this.scewinPath}" /o /s "${localExportFull}" >> "${logFile}" 2>&1`,
+        `echo EXIT1:%ERRORLEVEL% >> "${logFile}"`,
+        `if not exist "${localExportFull}" (`,
+        `  echo [RETRY_RELATIVE] >> "${logFile}"`,
+        `  echo. | "${this.scewinPath}" /o /s ${localExport} >> "${logFile}" 2>&1`,
+        `  echo EXIT2:%ERRORLEVEL% >> "${logFile}"`,
+        `)`,
+        `if not exist "${localExportFull}" (`,
+        `  echo [RETRY_DEFAULT] >> "${logFile}"`,
+        `  echo. | "${this.scewinPath}" /o >> "${logFile}" 2>&1`,
+        `  echo EXIT3:%ERRORLEVEL% >> "${logFile}"`,
+        `)`,
+        `echo [FILES_IN_DIR] >> "${logFile}"`,
+        `dir /b "${scewinDir}\\*.txt" >> "${logFile}" 2>&1`,
+        `echo [FILES_SYS32] >> "${logFile}"`,
+        `dir /b "C:\\Windows\\System32\\fn_export*" >> "${logFile}" 2>&1`,
+        `dir /b "C:\\Windows\\System32\\AMISCE*" >> "${logFile}" 2>&1`,
+        `echo [TASK_DONE] >> "${logFile}"`,
+      ].join("\r\n");
+      fs.writeFileSync(batchPath, batchContent, "utf8");
+
+      // Delete old task if it exists, create new one as SYSTEM
+      const createTaskPS = [
+        "try { schtasks /delete /tn '" + taskName + "' /f 2>$null } catch {}",
+        "schtasks /create /tn '" + taskName + "' /tr '\"" + batchPath.replace(/'/g, "''") + "\"' /sc once /st 00:00 /ru SYSTEM /rl HIGHEST /f",
+        "Start-Sleep -Milliseconds 500",
+        "schtasks /run /tn '" + taskName + "'",
+      ].join("; ");
+
+      // This needs admin to create SYSTEM task, so elevate
+      const encodedCreate = Buffer.from(createTaskPS, "utf16le").toString("base64");
+      const elevatePS = [
+        "try {",
+        "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+        "  $psi.FileName = 'powershell.exe'",
+        `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCreate}'`,
+        "  $psi.Verb = 'RunAs'",
+        "  $psi.UseShellExecute = $true",
+        "  $psi.WindowStyle = 'Hidden'",
+        "  $proc = [System.Diagnostics.Process]::Start($psi)",
+        "  $proc.WaitForExit(30000)",
+        "  Write-Output 'TASK_LAUNCHED'",
+        "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
+      ].join("\n");
+
+      const taskResult = await runPS(elevatePS, 45000);
+      this._lastElevatedResult = taskResult;
+
+      // Wait for the task to complete (check for output file + log)
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const log = fs.readFileSync(logFile, "utf8");
+          if (log.includes("[TASK_DONE]")) { method1Success = true; break; }
+        } catch(e) {}
+        // Also check if output file appeared
+        if (fs.existsSync(localExportFull) || fs.existsSync(amisceOutput) || fs.existsSync(exportPath)) {
+          method1Success = true;
+          break;
+        }
+      }
+
+      // Clean up: delete the scheduled task
+      try {
+        await runPS("try { schtasks /delete /tn '" + taskName + "' /f 2>$null } catch {}", 10000);
+      } catch(e) {}
+      try { fs.unlinkSync(batchPath); } catch(e) {}
+
+    } catch(e) {
+      // Task creation failed, fall through to method 2
+    }
+
+    // Read log for diagnostics
+    let logContent = "";
+    try { logContent = fs.readFileSync(logFile, "utf8"); } catch(e) {}
+
+    // ── Method 2 (fallback): Direct exe elevation ──
+    // Driver DOES load with direct elevation. Process hangs on "Press any key"
+    // but export file may already be written. We kill after timeout and search.
+    if (!method1Success || (logContent.includes("Unable to load driver"))) {
+      // Clean log for method 2
+      try { fs.unlinkSync(logFile); } catch(e) {}
+      logContent = "";
+
+      const psScript = [
+        "try {",
+        "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+        `  $psi.FileName = '${this.scewinPath.replace(/'/g, "''")}'`,
+        `  $psi.Arguments = '/o /s ""${localExportFull.replace(/'/g, "''")}""'`,
+        `  $psi.WorkingDirectory = '${scewinDir.replace(/'/g, "''")}'`,
+        "  $psi.Verb = 'RunAs'",
+        "  $psi.UseShellExecute = $true",
+        "  $psi.WindowStyle = 'Normal'",
+        "  $proc = [System.Diagnostics.Process]::Start($psi)",
+        "  # Wait up to 15s for export to complete, then kill (hangs on Press any key)",
+        "  $proc.WaitForExit(15000)",
+        "  if (!$proc.HasExited) {",
+        "    try { $proc.Kill() } catch {}",
+        "    Write-Output 'KILLED_AFTER_TIMEOUT'",
+        "  } else {",
+        "    Write-Output \"EXITED:$($proc.ExitCode)\"",
+        "  }",
+        "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
+      ].join("\n");
+
+      const directResult = await runPS(psScript, 30000);
+      this._lastElevatedResult = directResult;
+      logContent = `[DirectElevation] ${directResult.output || ""} ${directResult.error || ""}`;
+
+      // Give a moment for file I/O to flush
+      await new Promise(r => setTimeout(r, 3000));
+
+      // If that used absolute path and WorkingDirectory was ignored,
+      // try again with /o only (default AMISCE.txt in working dir — which might be System32)
+      if (!fs.existsSync(localExportFull) && !fs.existsSync(amisceOutput)) {
+        const psScript2 = [
+          "try {",
+          "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+          `  $psi.FileName = '${this.scewinPath.replace(/'/g, "''")}'`,
+          "  $psi.Arguments = '/o'",
+          `  $psi.WorkingDirectory = '${scewinDir.replace(/'/g, "''")}'`,
+          "  $psi.Verb = 'RunAs'",
+          "  $psi.UseShellExecute = $true",
+          "  $psi.WindowStyle = 'Normal'",
+          "  $proc = [System.Diagnostics.Process]::Start($psi)",
+          "  $proc.WaitForExit(15000)",
+          "  if (!$proc.HasExited) { try { $proc.Kill() } catch {} }",
+          "  Write-Output 'ATTEMPT2_DONE'",
+          "} catch { Write-Output \"ERROR2:$($_.Exception.Message)\" }",
+        ].join("\n");
+        const directResult2 = await runPS(psScript2, 30000);
+        logContent += ` | [Attempt2_/o] ${directResult2.output || ""}`;
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+
+    this._lastExportLog = logContent;
+
+    // ── Aggressive file search ──
+    // The output file could be in: scewin dir, System32, user profile, temp, export path
+    const searchPaths = [
+      exportPath,
+      localExportFull,
+      amisceOutput,
+      path.join("C:\\Windows\\System32", localExport),
+      path.join("C:\\Windows\\System32", "AMISCE.txt"),
+      path.join(os.homedir(), localExport),
+      path.join(os.homedir(), "AMISCE.txt"),
+      path.join(os.tmpdir(), localExport),
+      path.join(os.tmpdir(), "AMISCE.txt"),
+      path.join("C:\\Windows", localExport),
+      path.join("C:\\Windows", "AMISCE.txt"),
+    ];
+
+    // Also scan scewin dir for any recently created .txt files
     try {
       const files = fs.readdirSync(scewinDir);
       for (const f of files) {
-        if ((f.endsWith(".txt") || f.endsWith(".TXT")) && f !== "AMISCE.txt") {
+        if ((f.endsWith(".txt") || f.endsWith(".TXT")) && !searchPaths.includes(path.join(scewinDir, f))) {
           const fp = path.join(scewinDir, f);
           try {
             const stat = fs.statSync(fp);
-            if (Date.now() - stat.mtimeMs < 60000) checkFiles.push(fp);
+            if (Date.now() - stat.mtimeMs < 120000) searchPaths.push(fp);
           } catch(e) {}
         }
       }
     } catch(e) {}
 
-    for (const checkPath of checkFiles) {
+    // Log which files exist for debugging
+    const foundFiles = [];
+    for (const sp of searchPaths) {
+      try {
+        if (fs.existsSync(sp)) {
+          const stat = fs.statSync(sp);
+          foundFiles.push(`${sp} (${stat.size}b, ${Math.round((Date.now()-stat.mtimeMs)/1000)}s ago)`);
+        }
+      } catch(e) {}
+    }
+    if (foundFiles.length > 0) {
+      logContent += ` | [FOUND_FILES] ${foundFiles.join("; ")}`;
+      this._lastExportLog = logContent;
+    }
+
+    // Try to parse each found file
+    for (const checkPath of searchPaths) {
       try {
         if (fs.existsSync(checkPath)) {
           const raw = fs.readFileSync(checkPath, "utf8");
           if (raw.length > 50) {
-            // Try standard parse
             const settings = this._parseExport(raw);
             let count = Object.keys(settings).length;
             if (count > 0) {
@@ -638,9 +676,8 @@ class SceWinManager {
               if (checkPath !== exportPath) {
                 try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
               }
-              return { success: true, settings, settingCount: count, method: "elevated-batch" };
+              return { success: true, settings, settingCount: count, method: "schtask-system" };
             }
-            // Try alternate parse
             const altSettings = this._parseExportAlt(raw);
             count = Object.keys(altSettings).length;
             if (count > 0) {
@@ -648,25 +685,27 @@ class SceWinManager {
               if (checkPath !== exportPath) {
                 try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
               }
-              return { success: true, settings: altSettings, settingCount: count, method: "elevated-batch-alt" };
+              return { success: true, settings: altSettings, settingCount: count, method: "schtask-system-alt" };
             }
           }
         }
       } catch(e) {}
     }
 
-    // If UAC was denied or failed, provide clear feedback
-    const uacDenied = (elevatedResult.error || "").includes("canceled") || (elevatedResult.error || "").includes("denied") || (elevatedResult.error || "").includes("not recognized");
-
-    const driverError = logContent.includes("Unable to load driver");
+    // Failed — build helpful error
+    const uacDenied = (logContent || "").includes("canceled") || (logContent || "").includes("denied");
+    const driverError = (logContent || "").includes("Unable to load driver");
 
     let errorMsg = "SceWin export failed. ";
-    if (uacDenied || (!logContent && !elevatedResult.success)) {
-      errorMsg += "Admin elevation required — click 'Yes' on the UAC prompt when it appears.";
+    if (uacDenied) {
+      errorMsg += "Admin elevation required — click 'Yes' on the UAC prompt.";
     } else if (driverError) {
       errorMsg += "AMISCE driver won't load. Try: (1) Disable Secure Boot in BIOS, (2) Boot with driver signature enforcement disabled.";
     } else {
-      errorMsg += logContent ? `Log: ${logContent.substring(0, 300)}` : "No log output — batch may have timed out.";
+      errorMsg += logContent ? `Log: ${logContent.substring(0, 500)}` : "No output — process may have timed out.";
+    }
+    if (foundFiles.length > 0) {
+      errorMsg += ` Found files: ${foundFiles.join("; ")}`;
     }
 
     return { success: false, error: errorMsg, log: logContent };
@@ -760,70 +799,68 @@ class SceWinManager {
     return settings;
   }
 
-  // Helper: run any SCEWIN command elevated via PowerShell RunAs
-  // Uses .NET ProcessStartInfo from elevated PS (same approach as exportCurrentSettings)
-  // so SCEWIN inherits admin token directly — no cmd /c intermediary that strips driver privileges
+  // Helper: run any SCEWIN command elevated via scheduled task (SYSTEM)
+  // The AMISCE driver only loads when exe runs as SYSTEM or is direct UAC target.
+  // Scheduled task approach gives us SYSTEM + stdin piping via batch.
   async _runScewinElevated(args, timeout = 45000) {
     const scewinDir = path.dirname(this.scewinPath);
     const logFile = path.join(scewinDir, "fn_scewin_cmd_log.txt");
     try { fs.unlinkSync(logFile); } catch(e) {}
 
-    const psLog = logFile.replace(/\\/g, "\\\\").replace(/'/g, "''");
-    const psExePath = this.scewinPath.replace(/\\/g, "\\\\").replace(/'/g, "''");
-    const psScewinDir = scewinDir.replace(/\\/g, "\\\\").replace(/'/g, "''");
+    const taskName = "FNOptSceWinCmd";
+    const batchPath = path.join(scewinDir, "fn_task_cmd.bat");
 
-    // Inner PS command: use .NET ProcessStartInfo to launch SCEWIN with stdin redirect
-    const innerCmd = [
-      "$ErrorActionPreference = 'Continue'",
-      `Add-Content '${psLog}' '[ScewinCmd starting]'`,
-      `Add-Content '${psLog}' 'Args: ${args.replace(/'/g, "''")}'`,
-      "try {",
-      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      `  $psi.FileName = '${psExePath}'`,
-      `  $psi.Arguments = '${args.replace(/'/g, "''")}'`,
-      `  $psi.WorkingDirectory = '${psScewinDir}'`,
-      "  $psi.UseShellExecute = $false",
-      "  $psi.RedirectStandardInput = $true",
-      "  $psi.RedirectStandardOutput = $true",
-      "  $psi.RedirectStandardError = $true",
-      "  $psi.CreateNoWindow = $false",
-      "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      "  Start-Sleep -Milliseconds 500",
-      "  $proc.StandardInput.WriteLine('')",
-      "  $proc.StandardInput.Close()",
-      "  $stdout = $proc.StandardOutput.ReadToEnd()",
-      "  $stderr = $proc.StandardError.ReadToEnd()",
-      "  $proc.WaitForExit(30000)",
-      `  Add-Content '${psLog}' "stdout: $stdout"`,
-      `  Add-Content '${psLog}' "stderr: $stderr"`,
-      `  Add-Content '${psLog}' "EXIT_CODE:$($proc.ExitCode)"`,
-      "} catch {",
-      `  Add-Content '${psLog}' "ERROR: $($_.Exception.Message)"`,
-      "}",
-      `Add-Content '${psLog}' '[DONE]'`,
-    ].join("\n");
+    // Build batch that pipes stdin and logs output
+    const batchContent = [
+      "@echo off",
+      `cd /d "${scewinDir}"`,
+      `echo [CMD_START] >> "${logFile}"`,
+      `echo [ARGS] ${args} >> "${logFile}"`,
+      `echo. | "${this.scewinPath}" ${args} >> "${logFile}" 2>&1`,
+      `echo EXIT_CODE:%ERRORLEVEL% >> "${logFile}"`,
+      `echo [CMD_DONE] >> "${logFile}"`,
+    ].join("\r\n");
+    fs.writeFileSync(batchPath, batchContent, "utf8");
 
-    const encodedCmd = Buffer.from(innerCmd, "utf16le").toString("base64");
+    // Create and run scheduled task as SYSTEM
+    const createPS = [
+      "try { schtasks /delete /tn '" + taskName + "' /f 2>$null } catch {}",
+      "schtasks /create /tn '" + taskName + "' /tr '\"" + batchPath.replace(/'/g, "''") + "\"' /sc once /st 00:00 /ru SYSTEM /rl HIGHEST /f",
+      "Start-Sleep -Milliseconds 500",
+      "schtasks /run /tn '" + taskName + "'",
+    ].join("; ");
 
-    const psScript = [
+    const encodedCreate = Buffer.from(createPS, "utf16le").toString("base64");
+    const elevatePS = [
       "try {",
       "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
       "  $psi.FileName = 'powershell.exe'",
-      `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}'`,
+      `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCreate}'`,
       "  $psi.Verb = 'RunAs'",
       "  $psi.UseShellExecute = $true",
-      "  $psi.WindowStyle = 'Normal'",
+      "  $psi.WindowStyle = 'Hidden'",
       "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      `  $proc.WaitForExit(${timeout})`,
-      "  if (!$proc.HasExited) { $proc.Kill() }",
-      "  Start-Sleep -Seconds 1",
-      "  Write-Output 'DONE'",
+      "  $proc.WaitForExit(20000)",
+      "  Write-Output 'TASK_LAUNCHED'",
       "} catch { Write-Output \"ERROR:$($_.Exception.Message)\" }",
     ].join("\n");
 
-    const result = await runPS(psScript, timeout + 15000);
+    const result = await runPS(elevatePS, 30000);
+
+    // Wait for task completion
     let log = "";
-    try { log = fs.readFileSync(logFile, "utf8"); } catch(e) {}
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000));
+      try { log = fs.readFileSync(logFile, "utf8"); } catch(e) {}
+      if (log.includes("[CMD_DONE]")) break;
+    }
+
+    // Clean up
+    try { await runPS("try { schtasks /delete /tn '" + taskName + "' /f 2>$null } catch {}", 10000); } catch(e) {}
+    try { fs.unlinkSync(batchPath); } catch(e) {}
+
+    if (!log) log = result.output || result.error || "no output";
     const exitMatch = log.match(/EXIT_CODE:(\d+)/);
     const exitCode = exitMatch ? parseInt(exitMatch[1]) : -1;
 
