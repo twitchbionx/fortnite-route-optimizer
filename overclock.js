@@ -19,6 +19,8 @@ const CRASH_LOG_PATH = path.join(os.homedir(), ".fn-optimizer", "crash-log.json"
 const SCEWIN_BACKUP_PATH = path.join(os.homedir(), ".fn-optimizer", "scewin-backup.txt");
 const SCEWIN_EXPORT_PATH = path.join(os.homedir(), ".fn-optimizer", "scewin-export.txt");
 const SCEWIN_CHANGE_LOG_PATH = path.join(os.homedir(), ".fn-optimizer", "scewin-changes.json");
+const AI_OC_STATE_PATH = path.join(os.homedir(), ".fn-optimizer", "ai-oc-state.json");
+const AI_OC_AUTOSTART_TASK = "FNOptimizerAutoOC";
 
 function runCmd(cmd, timeout = 15000) {
   return new Promise((resolve) => {
@@ -320,30 +322,155 @@ class HWiNFOReader {
       allSensors: raw,
     };
 
+    // ═══════════════════════════════════════════════════════════════════
+    // HWiNFO VSB SENSOR PARSING — UNIT-AWARE
+    //
+    // The VSB registry stores Label/Value/ValueRaw for each sensor.
+    // The Value string contains the unit: "50.0 °C", "1.250 V", "4800 MHz", etc.
+    // We use the unit from Value to CATEGORIZE the sensor type first,
+    // then match by label name. This avoids the old bug where "CPU Package"
+    // (no "temp" in label) was missed, and "CPU DTS" or thermal zone
+    // sensors with wrong values were matched instead.
+    //
+    // Priority for CPU temperature (highest to lowest):
+    //   1. "CPU Package" — Intel package temp (most accurate for overall CPU)
+    //   2. "CPU (Tctl/Tdie)" — AMD equivalent
+    //   3. "Core Max" / "CPU Core Max" — highest core
+    //   4. "Core Average" — average across all cores
+    //   5. Any label with "cpu" + unit is °C
+    // ═══════════════════════════════════════════════════════════════════
+
+    // Classify each sensor by unit from Value string
+    const tempSensors = [];   // { label, lbl, val }
+    const voltSensors = [];
+    const clockSensors = [];
+    const powerSensors = [];
+    const loadSensors = [];
+    const fanSensors = [];
+    const otherSensors = [];
+
     for (const [label, data] of Object.entries(raw)) {
-      const lbl = label.toLowerCase();
-      const val = parseFloat(data.raw || data.value);
+      const val = parseFloat(data.raw != null ? data.raw : data.value);
       if (isNaN(val)) continue;
 
-      // CPU
-      if (lbl.includes("cpu") && lbl.includes("package") && lbl.includes("temp")) sensors.cpuPackageTemp = val;
-      else if (lbl.includes("cpu") && lbl.includes("temp") && !sensors.cpuTemp) sensors.cpuTemp = val;
-      else if (lbl.includes("cpu") && lbl.includes("vcore") || (lbl.includes("cpu") && lbl.includes("voltage"))) sensors.cpuVoltage = val;
-      else if (lbl.includes("cpu") && lbl.includes("clock") && !lbl.includes("ring")) sensors.cpuClock = val;
-      else if (lbl.includes("cpu") && lbl.includes("package") && lbl.includes("power")) sensors.cpuPower = val;
-      // GPU
-      else if (lbl.includes("gpu") && lbl.includes("temp") && !lbl.includes("hot")) sensors.gpuTemp = val;
-      else if (lbl.includes("gpu") && lbl.includes("clock") && !lbl.includes("mem")) sensors.gpuClock = val;
-      else if (lbl.includes("gpu") && lbl.includes("mem") && lbl.includes("clock")) sensors.gpuMemClock = val;
-      else if (lbl.includes("gpu") && lbl.includes("load") || (lbl.includes("gpu") && lbl.includes("usage"))) sensors.gpuLoad = val;
-      else if (lbl.includes("gpu") && lbl.includes("power")) sensors.gpuPower = val;
-      else if (lbl.includes("gpu") && lbl.includes("memory") && lbl.includes("used")) sensors.gpuVram = val;
-      // RAM
-      else if (lbl.includes("dimm") && lbl.includes("temp") || (lbl.includes("memory") && lbl.includes("temp"))) sensors.ramTemp = val;
-      // VRM
-      else if (lbl.includes("vrm") && lbl.includes("temp")) sensors.vrmTemp = val;
-      // Fans
-      else if (lbl.includes("fan") && (lbl.includes("rpm") || lbl.includes("speed"))) sensors.fanSpeeds[label] = val;
+      const valueStr = (data.value || "").toString();
+      const lbl = label.toLowerCase();
+      const entry = { label, lbl, val };
+
+      // Determine sensor type from Value string unit
+      if (valueStr.includes("°C") || valueStr.includes("\u00B0C") || valueStr.includes("deg C")) {
+        tempSensors.push(entry);
+      } else if (/\bV\b/.test(valueStr) || valueStr.includes("Volt")) {
+        voltSensors.push(entry);
+      } else if (valueStr.includes("MHz") || valueStr.includes("GHz")) {
+        clockSensors.push(entry);
+      } else if (valueStr.includes(" W") || valueStr.includes("Watt")) {
+        powerSensors.push(entry);
+      } else if (valueStr.includes("%")) {
+        loadSensors.push(entry);
+      } else if (valueStr.includes("RPM")) {
+        fanSensors.push(entry);
+      } else {
+        // Fallback: guess from label keywords
+        if (lbl.includes("temp") || lbl.includes("thermal")) tempSensors.push(entry);
+        else if (lbl.includes("volt") || lbl.includes("vcore")) voltSensors.push(entry);
+        else if (lbl.includes("clock") || lbl.includes("freq") || lbl.includes("mhz")) clockSensors.push(entry);
+        else if (lbl.includes("power") || lbl.includes("watt") || lbl.includes("tdp")) powerSensors.push(entry);
+        else if (lbl.includes("load") || lbl.includes("usage") || lbl.includes("util")) loadSensors.push(entry);
+        else if (lbl.includes("fan") || lbl.includes("rpm")) fanSensors.push(entry);
+        else otherSensors.push(entry);
+      }
+    }
+
+    // ── CPU TEMPERATURE (from confirmed temperature sensors only) ──
+    // Priority: CPU Package > Tctl/Tdie > Core Max > Core Average > any CPU temp
+    const cpuTempPriority = [
+      (s) => s.lbl.includes("cpu") && s.lbl.includes("package") && !s.lbl.includes("power"),
+      (s) => s.lbl.includes("tctl") || s.lbl.includes("tdie") || s.lbl.includes("tctl/tdie"),
+      (s) => s.lbl.includes("cpu") && (s.lbl.includes("core max") || s.lbl.includes("ccd")),
+      (s) => s.lbl.includes("core") && s.lbl.includes("average"),
+      (s) => s.lbl.includes("core") && s.lbl.includes("max"),
+      (s) => s.lbl.includes("cpu") && !s.lbl.includes("vrm") && !s.lbl.includes("vr "),
+      (s) => s.lbl.includes("core") && s.val > 15 && s.val < 110,
+    ];
+    for (const matcher of cpuTempPriority) {
+      const found = tempSensors.find(matcher);
+      if (found && found.val > 10 && found.val < 115) {
+        sensors.cpuPackageTemp = found.val;
+        break;
+      }
+    }
+    // Also grab any generic CPU temp that's different from package
+    if (!sensors.cpuPackageTemp) {
+      const anyCpu = tempSensors.find(s => s.lbl.includes("cpu") && s.val > 10 && s.val < 115);
+      if (anyCpu) sensors.cpuPackageTemp = anyCpu.val;
+    }
+    // Set cpuTemp as alias for backward compatibility
+    sensors.cpuTemp = sensors.cpuPackageTemp;
+
+    // ── GPU TEMPERATURE ──
+    const gpuTemp = tempSensors.find(s =>
+      (s.lbl.includes("gpu") || s.lbl.includes("geforce") || s.lbl.includes("radeon")) &&
+      !s.lbl.includes("hot spot") && !s.lbl.includes("hotspot") &&
+      !s.lbl.includes("memory") && !s.lbl.includes("junction")
+    ) || tempSensors.find(s => s.lbl.includes("gpu"));
+    if (gpuTemp && gpuTemp.val > 0) sensors.gpuTemp = gpuTemp.val;
+
+    // ── VRM TEMPERATURE ──
+    const vrmTemp = tempSensors.find(s => s.lbl.includes("vrm") || s.lbl.includes("vr mos") || s.lbl.includes("mos temp"));
+    if (vrmTemp && vrmTemp.val > 0) sensors.vrmTemp = vrmTemp.val;
+
+    // ── RAM TEMPERATURE ──
+    const ramTemp = tempSensors.find(s => s.lbl.includes("dimm") || (s.lbl.includes("memory") && !s.lbl.includes("gpu")));
+    if (ramTemp && ramTemp.val > 0) sensors.ramTemp = ramTemp.val;
+
+    // ── CPU VOLTAGE ──
+    const cpuVolt = voltSensors.find(s => s.lbl.includes("vcore") || s.lbl.includes("cpu core"))
+      || voltSensors.find(s => s.lbl.includes("cpu") && s.lbl.includes("volt"))
+      || voltSensors.find(s => s.lbl.includes("cpu") && s.lbl.includes("vid"))
+      || voltSensors.find(s => s.lbl.includes("core") && s.val > 0.5 && s.val < 2.0);
+    if (cpuVolt && cpuVolt.val > 0) sensors.cpuVoltage = cpuVolt.val;
+
+    // ── CPU CLOCK ──
+    const cpuClock = clockSensors.find(s => s.lbl.includes("cpu") && s.lbl.includes("core") && !s.lbl.includes("ring") && !s.lbl.includes("uncore"))
+      || clockSensors.find(s => s.lbl.includes("core") && s.lbl.includes("clock") && !s.lbl.includes("ring"))
+      || clockSensors.find(s => s.lbl.includes("cpu") && !s.lbl.includes("ring") && !s.lbl.includes("uncore") && !s.lbl.includes("bus") && !s.lbl.includes("bclk"))
+      || clockSensors.find(s => s.lbl.includes("p-core") || s.lbl.includes("core 0"));
+    if (cpuClock && cpuClock.val > 100) sensors.cpuClock = cpuClock.val;
+
+    // ── CPU POWER ──
+    const cpuPower = powerSensors.find(s => s.lbl.includes("cpu") && s.lbl.includes("package"))
+      || powerSensors.find(s => s.lbl.includes("cpu package"))
+      || powerSensors.find(s => s.lbl.includes("cpu") && s.lbl.includes("power"))
+      || powerSensors.find(s => s.lbl.includes("package power"));
+    if (cpuPower && cpuPower.val > 0) sensors.cpuPower = cpuPower.val;
+
+    // ── GPU CLOCK ──
+    const gpuClock = clockSensors.find(s => s.lbl.includes("gpu") && s.lbl.includes("core"))
+      || clockSensors.find(s => s.lbl.includes("gpu") && s.lbl.includes("clock") && !s.lbl.includes("mem"))
+      || clockSensors.find(s => s.lbl.includes("gpu") && !s.lbl.includes("mem") && !s.lbl.includes("video"));
+    if (gpuClock && gpuClock.val > 0) sensors.gpuClock = gpuClock.val;
+
+    // ── GPU MEM CLOCK ──
+    const gpuMemClk = clockSensors.find(s => s.lbl.includes("gpu") && (s.lbl.includes("mem") || s.lbl.includes("memory")));
+    if (gpuMemClk && gpuMemClk.val > 0) sensors.gpuMemClock = gpuMemClk.val;
+
+    // ── GPU LOAD ──
+    const gpuLoad = loadSensors.find(s => s.lbl.includes("gpu") && (s.lbl.includes("core") || s.lbl.includes("load") || s.lbl.includes("util")))
+      || loadSensors.find(s => s.lbl.includes("gpu") && !s.lbl.includes("mem") && !s.lbl.includes("video"));
+    if (gpuLoad) sensors.gpuLoad = gpuLoad.val;
+
+    // ── GPU POWER ──
+    const gpuPow = powerSensors.find(s => s.lbl.includes("gpu") || s.lbl.includes("geforce") || s.lbl.includes("radeon"));
+    if (gpuPow && gpuPow.val > 0) sensors.gpuPower = gpuPow.val;
+
+    // ── GPU VRAM ──
+    const gpuVram = otherSensors.concat(loadSensors).find(s => s.lbl.includes("gpu") && s.lbl.includes("memory") && s.lbl.includes("used"));
+    if (gpuVram && gpuVram.val > 0) sensors.gpuVram = gpuVram.val;
+
+    // ── FAN SPEEDS ──
+    for (const f of fanSensors) {
+      if (f.val > 0) sensors.fanSpeeds[f.label] = f.val;
     }
 
     return sensors;
@@ -1303,6 +1430,89 @@ class AIOverclockEngine {
     this._log(this.phase, "stop", "Stop requested by user");
   }
 
+  // ── Reboot-and-Resume State Management ────────────────────────────
+  // SceWin writes BIOS NVRAM but changes only take effect after reboot.
+  // We save the current OC state to disk, register the app to auto-start
+  // after reboot, and on next launch detect the saved state and resume.
+  // ────────────────────────────────────────────────────────────────────
+
+  _saveOcState(state) {
+    try {
+      const dir = path.dirname(AI_OC_STATE_PATH);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const data = {
+        ...state,
+        savedAt: new Date().toISOString(),
+        log: this.log, // preserve log across reboots
+      };
+      fs.writeFileSync(AI_OC_STATE_PATH, JSON.stringify(data, null, 2));
+      return true;
+    } catch (e) { return false; }
+  }
+
+  _loadOcState() {
+    try {
+      if (!fs.existsSync(AI_OC_STATE_PATH)) return null;
+      const data = JSON.parse(fs.readFileSync(AI_OC_STATE_PATH, "utf8"));
+      // State expires after 2 hours (in case user never rebooted)
+      const savedAt = new Date(data.savedAt).getTime();
+      if (Date.now() - savedAt > 2 * 60 * 60 * 1000) {
+        this._clearOcState();
+        return null;
+      }
+      return data;
+    } catch (e) { return null; }
+  }
+
+  _clearOcState() {
+    try { fs.unlinkSync(AI_OC_STATE_PATH); } catch (e) {}
+    // Remove the auto-start scheduled task
+    this._unregisterAutoStart().catch(() => {});
+  }
+
+  async _registerAutoStart() {
+    // Register a Windows scheduled task to launch our app at next logon
+    // This ensures we resume after reboot
+    const appPath = process.execPath; // Electron exe path
+    const psScript = [
+      `try { schtasks /delete /tn '${AI_OC_AUTOSTART_TASK}' /f 2>$null } catch {}`,
+      `schtasks /create /tn '${AI_OC_AUTOSTART_TASK}' /tr '"${appPath}" --resume-oc' /sc onlogon /rl HIGHEST /f`,
+    ].join("; ");
+    const result = await runPS(psScript, 15000);
+    return result.success;
+  }
+
+  async _unregisterAutoStart() {
+    await runPS(`try { schtasks /delete /tn '${AI_OC_AUTOSTART_TASK}' /f 2>$null } catch {}`, 10000);
+  }
+
+  async _rebootAndResume(state) {
+    this._log("testing", "reboot-save", `Saving OC state before reboot: phase=${state.resumePhase}, ratio=x${state.currentRatio || "?"}, voltage=${state.currentVoltage || "auto"}`);
+    this._saveOcState(state);
+    await this._registerAutoStart();
+
+    this._log("testing", "reboot-trigger", "Initiating system reboot in 10 seconds... BIOS changes will take effect after restart.");
+
+    // Give the user 10 seconds to see the message
+    await new Promise(r => setTimeout(r, 10000));
+
+    // Trigger Windows reboot
+    const rebootResult = await runPS(
+      "Start-Process -FilePath 'shutdown.exe' -ArgumentList '/r /t 5 /c \"FN Optimizer: Rebooting to apply BIOS overclock settings...\"' -Verb RunAs",
+      15000
+    );
+
+    if (!rebootResult.success) {
+      this._log("testing", "reboot-fail", "Could not initiate reboot automatically. Please reboot manually and relaunch the app to continue the AI OC process.");
+      return false;
+    }
+    return true;
+  }
+
+  hasResumeState() {
+    return this._loadOcState() !== null;
+  }
+
   // ── Extended Stress Test ──────────────────────────────────────────
 
   async runExtendedStressTest(durationMinutes = 30, options = {}) {
@@ -1501,29 +1711,112 @@ class AIOverclockEngine {
       hwinfoCpuPower = hwinfoSensors.sensors.cpuPower || null;
       const source = hwinfoSensors.source || "VSB/CSV";
       this._log("analyzing", "hwinfo-live", `HWiNFO live readings (${source}) — Temp: ${hwinfoCpuTemp}C | Clock: ${hwinfoClockMHz} MHz | Power: ${hwinfoCpuPower}W`);
+
+      // DIAGNOSTIC: Dump ALL sensor labels and their values so we can identify correct sensors
+      if (hwinfoSensors.sensors.allSensors) {
+        const allLabels = Object.entries(hwinfoSensors.sensors.allSensors);
+        this._log("analyzing", "hwinfo-sensor-count", `Total HWiNFO sensors: ${allLabels.length}`);
+        // Log ALL sensors that have "temp" or "cpu" or "gpu" or "clock" or "voltage" in the name
+        const interesting = allLabels.filter(([lbl]) => {
+          const l = lbl.toLowerCase();
+          return l.includes("temp") || l.includes("cpu") || l.includes("gpu") ||
+                 l.includes("clock") || l.includes("volt") || l.includes("power") ||
+                 l.includes("core") || l.includes("package") || l.includes("tctl") ||
+                 l.includes("tdie") || l.includes("hot");
+        });
+        for (let i = 0; i < interesting.length; i += 5) {
+          const chunk = interesting.slice(i, i + 5)
+            .map(([lbl, data]) => `"${lbl}"=${data.raw || data.value}`)
+            .join(" | ");
+          this._log("analyzing", "hwinfo-sensors", `Sensors [${i}]: ${chunk}`);
+        }
+      }
     } else {
       this._log("analyzing", "hwinfo-fail", `HWiNFO sensor read failed: ${hwinfoSensors.error || "unknown"} — temps will use WMI fallback`);
     }
 
-    // Determine base ratio: prefer BIOS reading, then HWiNFO clock, then WMI estimate
-    if (biosRatio && biosRatio >= 10 && biosRatio <= 80) {
+    // ═══════════════════════════════════════════════════════════════════
+    // RATIO DETECTION: For modern Intel, we need ACTUAL boost clock, not base
+    //
+    // i9-14900K: Base = 3.2GHz (x32), P-Core Turbo = 5.6GHz (x56), Turbo Max 3.0 = 6.0GHz (x60)
+    // The "base ratio" from WMI CurrentClockSpeed is often the BASE, not boost.
+    // HWiNFO shows ACTUAL current clock which could be anywhere from idle to boost.
+    //
+    // For OC, we need to know:
+    //  - Stock max turbo ratio (from CPU spec, not current measurement)
+    //  - Current actual clock under load (from HWiNFO during stress)
+    //  - What BIOS has set (from SceWin export)
+    //
+    // Intel 14th gen (Raptor Lake Refresh) max boost clocks:
+    //   i9-14900K/KF: P-core 5.6GHz (x56), E-core 4.4GHz (x44)
+    //   i9-14900KS: P-core 6.0GHz (x60)
+    //   i7-14700K/KF: P-core 5.5GHz (x55)
+    //   i5-14600K/KF: P-core 5.3GHz (x53)
+    // Intel 13th gen:
+    //   i9-13900K/KF/KS: P-core 5.4-5.8GHz
+    //   i7-13700K/KF: P-core 5.3-5.4GHz
+    // ═══════════════════════════════════════════════════════════════════
+
+    // Detect stock max turbo from CPU model name
+    const cpuName = (hw.cpu.name || "").toUpperCase();
+    let stockMaxTurbo = 0;
+
+    // Intel 14th gen
+    if (cpuName.includes("14900KS")) stockMaxTurbo = 60;
+    else if (cpuName.includes("14900K")) stockMaxTurbo = 56;
+    else if (cpuName.includes("14700K")) stockMaxTurbo = 55;
+    else if (cpuName.includes("14600K")) stockMaxTurbo = 53;
+    // Intel 13th gen
+    else if (cpuName.includes("13900KS")) stockMaxTurbo = 58;
+    else if (cpuName.includes("13900K")) stockMaxTurbo = 54;
+    else if (cpuName.includes("13700K")) stockMaxTurbo = 54;
+    else if (cpuName.includes("13600K")) stockMaxTurbo = 53;
+    // Intel 12th gen
+    else if (cpuName.includes("12900K")) stockMaxTurbo = 52;
+    else if (cpuName.includes("12700K")) stockMaxTurbo = 50;
+    else if (cpuName.includes("12600K")) stockMaxTurbo = 49;
+    // AMD Ryzen 7000/9000
+    else if (cpuName.includes("9950X")) stockMaxTurbo = 57;
+    else if (cpuName.includes("9900X")) stockMaxTurbo = 56;
+    else if (cpuName.includes("9700X")) stockMaxTurbo = 53;
+    else if (cpuName.includes("9600X")) stockMaxTurbo = 53;
+    else if (cpuName.includes("7950X")) stockMaxTurbo = 57;
+    else if (cpuName.includes("7900X")) stockMaxTurbo = 56;
+    else if (cpuName.includes("7800X3D")) stockMaxTurbo = 50;
+    else if (cpuName.includes("7700X")) stockMaxTurbo = 54;
+    else if (cpuName.includes("7600X")) stockMaxTurbo = 53;
+
+    // Determine base ratio from WMI (base clock, NOT boost)
+    const wmiBaseClock = hw.cpu.maxClock || 3200; // WMI reports base clock
+    const wmiBaseRatio = Math.round(wmiBaseClock / 100);
+
+    // Use stock turbo if we identified the CPU, otherwise estimate
+    if (stockMaxTurbo > 0) {
+      analysis.baseRatio = stockMaxTurbo; // Start from stock turbo, not base
+      analysis.stockTurboRatio = stockMaxTurbo;
+      analysis.wmiBaseRatio = wmiBaseRatio;
+      this._log("analyzing", "ratio-source", `Stock max turbo for ${hw.cpu.name}: x${stockMaxTurbo} (${stockMaxTurbo * 100}MHz) | Base: x${wmiBaseRatio} (${wmiBaseClock}MHz)`);
+    } else if (biosRatio && biosRatio >= 10 && biosRatio <= 80) {
       analysis.baseRatio = biosRatio;
+      analysis.stockTurboRatio = biosRatio;
       this._log("analyzing", "ratio-source", `Using BIOS-reported CPU ratio: x${biosRatio}`);
     } else if (hwinfoClockMHz && hwinfoClockMHz > 500) {
       analysis.baseRatio = Math.round(hwinfoClockMHz / 100);
+      analysis.stockTurboRatio = analysis.baseRatio;
       this._log("analyzing", "ratio-source", `Using HWiNFO clock-derived ratio: x${analysis.baseRatio} (from ${hwinfoClockMHz} MHz)`);
     } else {
-      analysis.baseRatio = hw.cpu.maxClock ? Math.round(hw.cpu.maxClock / 100) : 36;
-      this._log("analyzing", "ratio-source", `Using WMI-estimated ratio: x${analysis.baseRatio} (from MaxClockSpeed ${hw.cpu.maxClock} MHz)`);
+      analysis.baseRatio = wmiBaseRatio;
+      analysis.stockTurboRatio = wmiBaseRatio;
+      this._log("analyzing", "ratio-source", `Using WMI-estimated ratio: x${analysis.baseRatio} (from ${wmiBaseClock} MHz)`);
     }
 
-    // Set turbo and ceiling based on detected base ratio
+    // Set ceiling: for unlocked Intel K-series, try 1-3 ratios above stock turbo
     if (analysis.isIntel) {
-      analysis.maxTurboRatio = analysis.baseRatio + 5;
-      analysis.safeCeilingRatio = analysis.cpuUnlocked ? analysis.maxTurboRatio + 3 : analysis.baseRatio;
+      analysis.maxTurboRatio = analysis.baseRatio;
+      analysis.safeCeilingRatio = analysis.cpuUnlocked ? analysis.baseRatio + 3 : analysis.baseRatio;
     } else if (analysis.isAMD) {
-      analysis.maxTurboRatio = analysis.baseRatio + 4;
-      analysis.safeCeilingRatio = analysis.cpuUnlocked ? analysis.maxTurboRatio + 2 : analysis.baseRatio;
+      analysis.maxTurboRatio = analysis.baseRatio;
+      analysis.safeCeilingRatio = analysis.cpuUnlocked ? analysis.baseRatio + 2 : analysis.baseRatio;
     }
 
     // Store actual voltage if we read one
@@ -1616,8 +1909,19 @@ class AIOverclockEngine {
   }
 
   // ── CPU Overclock Phase ───────────────────────────────────────────
+  // Strategy: Start from stock max turbo (e.g. x56 for i9-14900K).
+  // Step 1: Find MAX STABLE RATIO by going up 1 multiplier at a time.
+  //         Each step: write BIOS via SceWin → reboot → stress test → check stability.
+  // Step 2: At the max stable ratio, find the LOWEST stable voltage by
+  //         stepping down from auto/default in 10mV increments (undervolt).
+  //         This reduces heat and power while keeping the higher clock.
+  //
+  // BIOS changes via SceWin require a system reboot to take effect.
+  // The reboot-and-resume system saves state to disk, registers an
+  // auto-start task, and resumes automatically after each reboot.
+  // ────────────────────────────────────────────────────────────────────
 
-  async _cpuOcPhase(analysis) {
+  async _cpuOcPhase(analysis, resumeState = null) {
     if (!this.scewin.available) {
       this._log("testing", "skip-cpu", "SceWin not available — skipping CPU overclock phase");
       return null;
@@ -1628,9 +1932,9 @@ class AIOverclockEngine {
       return null;
     }
 
-    // Check that we have discovered BIOS setting names
     const ratioSettingName = this.biosMap && this.biosMap.cpuRatio ? this.biosMap.cpuRatio : null;
     const voltageSettingName = this.biosMap && this.biosMap.cpuVoltage ? this.biosMap.cpuVoltage : null;
+    const voltageModeSettingName = this.biosMap && this.biosMap.cpuVoltageMode ? this.biosMap.cpuVoltageMode : null;
 
     if (!ratioSettingName) {
       this._log("testing", "skip-cpu", "BIOS discovery did not find a CPU ratio setting — cannot safely overclock CPU. Check SceWin export for your motherboard's setting names.");
@@ -1638,170 +1942,469 @@ class AIOverclockEngine {
     }
 
     this._setPhase("testing", 20);
-    this._log("testing", "cpu-start", `Starting CPU overclock phase (ratio setting: "${ratioSettingName}"${voltageSettingName ? `, voltage setting: "${voltageSettingName}"` : ", voltage setting: NOT FOUND"})`);
+    this._log("testing", "cpu-start", `CPU OC Phase — ratio: "${ratioSettingName}" | voltage: "${voltageSettingName || "NOT FOUND"}" | voltage mode: "${voltageModeSettingName || "NOT FOUND"}"`);
 
-    // Backup current settings
+    // Backup current BIOS settings before making any changes
     await this.scewin.backupSettings();
-    this._log("testing", "backup", "BIOS settings backed up");
+    this._log("testing", "backup", "BIOS settings backed up before OC");
 
-    // Read ACTUAL current ratio from BIOS via discovered setting name
-    let startRatio = analysis.baseRatio;
-    const currentRatioRead = await this.scewin.readSetting(ratioSettingName);
-    if (currentRatioRead.success) {
-      const parsedRatio = parseInt(currentRatioRead.value, 16);
-      if (!isNaN(parsedRatio) && parsedRatio >= 10 && parsedRatio <= 80) {
-        startRatio = parsedRatio;
-        this._log("testing", "cpu-current", `Read current CPU ratio from BIOS "${ratioSettingName}": x${startRatio} (raw: ${currentRatioRead.value})`);
-      } else {
-        this._log("testing", "cpu-current-fallback", `BIOS ratio "${ratioSettingName}" returned unparseable value (${currentRatioRead.value}), using analysis base: x${startRatio}`);
-      }
-    } else {
-      this._log("testing", "cpu-current-fallback", `Could not read current ratio from "${ratioSettingName}", using analysis base: x${startRatio}`);
-    }
+    // Determine starting point and ceiling
+    const stockTurbo = analysis.stockTurboRatio || analysis.baseRatio;
+    const maxCeiling = analysis.safeCeilingRatio;
 
-    const maxRatio = analysis.safeCeilingRatio;
-    let lastGoodRatio = startRatio;
+    // If resuming from reboot, pick up where we left off
+    let startRatio = stockTurbo;
+    let lastGoodRatio = stockTurbo;
     let lastGoodVoltage = null;
-    const totalSteps = maxRatio - startRatio;
+    let subPhase = "ratio-hunt"; // ratio-hunt | voltage-optimize | done
+    let needsReboot = false; // track if we just wrote BIOS and need reboot
 
-    if (totalSteps <= 0) {
-      this._log("testing", "cpu-at-ceiling", `Current ratio x${startRatio} is already at or above safe ceiling x${maxRatio} — no overclock headroom`);
-      return { finalRatio: startRatio, finalVoltage: null, finalMHz: startRatio * 100, gainMHz: 0 };
+    if (resumeState && resumeState.resumePhase === "cpu") {
+      startRatio = resumeState.testingRatio || stockTurbo;
+      lastGoodRatio = resumeState.lastGoodRatio || stockTurbo;
+      lastGoodVoltage = resumeState.lastGoodVoltage || null;
+      subPhase = resumeState.subPhase || "ratio-hunt";
+      needsReboot = false; // we just rebooted, so BIOS changes are active
+
+      this._log("testing", "cpu-resume", `Resumed after reboot — testing x${startRatio}, last good x${lastGoodRatio}, sub-phase: ${subPhase}`);
+
+      // After reboot, the BIOS changes are now active — run stress test immediately
+      if (subPhase === "ratio-hunt") {
+        this._log("testing", "cpu-post-reboot-stress", `BIOS changes active after reboot — stress testing x${startRatio} (${startRatio * 100} MHz) for 10 minutes...`);
+        const postRebootStress = await this.runExtendedStressTest(10, { maxTemp: 95 });
+
+        if (postRebootStress.stable) {
+          lastGoodRatio = startRatio;
+          this._log("testing", "cpu-stable", `x${startRatio} is STABLE after reboot (max temp: ${postRebootStress.maxTemp}C, avg: ${postRebootStress.avgTemp}C)`, {
+            stable: true, temp: postRebootStress.maxTemp, clock: startRatio * 100,
+          });
+          startRatio++; // move to next ratio for continued testing
+        } else {
+          this._log("testing", "cpu-unstable", `x${startRatio} is UNSTABLE after reboot — rolling back to x${lastGoodRatio}`, {
+            stable: false, temp: postRebootStress.maxTemp, errors: postRebootStress.errors,
+          });
+          // Write the last good ratio back to BIOS
+          if (lastGoodRatio !== startRatio) {
+            await this.scewin.applyCpuMultiplier(lastGoodRatio, ratioSettingName);
+            // Need another reboot for the rollback, but skip stress test — we already know it's stable
+            needsReboot = true;
+          }
+          subPhase = voltageSettingName ? "voltage-optimize" : "done";
+        }
+      } else if (subPhase === "voltage-optimize") {
+        // We rebooted after a voltage change — stress test it
+        const vTest = resumeState.testingVoltage;
+        this._log("testing", "cpu-voltage-post-reboot", `Stress testing voltage ${vTest}V at x${lastGoodRatio} after reboot...`);
+        const vStress = await this.runExtendedStressTest(10, { maxTemp: 95 });
+
+        if (vStress.stable) {
+          lastGoodVoltage = vTest;
+          this._log("testing", "cpu-voltage-stable", `${vTest}V at x${lastGoodRatio} is STABLE — trying lower...`, {
+            stable: true, temp: vStress.maxTemp, voltage: vTest, clock: lastGoodRatio * 100,
+          });
+        } else {
+          this._log("testing", "cpu-voltage-unstable", `${vTest}V at x${lastGoodRatio} is UNSTABLE — previous voltage was the minimum`, {
+            stable: false, temp: vStress.maxTemp, voltage: vTest,
+          });
+          // Roll back to last good voltage
+          if (lastGoodVoltage && lastGoodVoltage !== vTest) {
+            await this.scewin.applyCpuVoltage(lastGoodVoltage, voltageSettingName);
+            needsReboot = true;
+          }
+          subPhase = "done";
+        }
+      }
     }
 
-    for (let ratio = startRatio + 1; ratio <= maxRatio; ratio++) {
-      if (this._stopRequested) break;
+    // ═══════════════════════════════════════════════════════════════════
+    // PHASE 1: RATIO HUNT — Find the highest stable CPU multiplier
+    // Start from stock turbo and go up. Each step requires a reboot
+    // because SceWin NVRAM writes only take effect after restart.
+    // ═══════════════════════════════════════════════════════════════════
+    if (subPhase === "ratio-hunt") {
+      const totalSteps = maxCeiling - stockTurbo;
+      this._log("testing", "ratio-hunt-start", `Ratio hunt: stock turbo x${stockTurbo} → ceiling x${maxCeiling} (${totalSteps} steps)`);
 
-      const stepProgress = 20 + ((ratio - startRatio) / totalSteps) * 30;
-      this._setPhase("testing", Math.round(stepProgress));
+      for (let ratio = startRatio; ratio <= maxCeiling; ratio++) {
+        if (this._stopRequested) break;
 
-      this._log("testing", "cpu-step", `Testing CPU multiplier x${ratio} (${ratio * 100} MHz)`, {
-        clock: ratio * 100, voltage: lastGoodVoltage,
-      });
+        const stepProgress = 20 + ((ratio - stockTurbo) / Math.max(totalSteps, 1)) * 25;
+        this._setPhase("testing", Math.round(stepProgress));
 
-      // Apply the multiplier using discovered BIOS setting name
-      const applyResult = await this.scewin.applyCpuMultiplier(ratio, ratioSettingName);
-      if (!applyResult.success) {
-        this._log("testing", "cpu-apply-error", `Failed to apply ratio x${ratio}: ${applyResult.error}`);
-        break;
-      }
-
-      // Run stress test (use shorter test for intermediate steps)
-      const testMinutes = ratio === maxRatio ? 30 : 10;
-      this._log("testing", "cpu-stress", `Running ${testMinutes}-minute stress test at x${ratio}...`);
-
-      const result = await this.runExtendedStressTest(testMinutes, { maxTemp: 95 });
-
-      if (result.stable) {
-        lastGoodRatio = ratio;
-        this._log("testing", "cpu-stable", `x${ratio} is STABLE (max temp: ${result.maxTemp}C, avg: ${result.avgTemp}C)`, {
-          stable: true, temp: result.maxTemp, clock: ratio * 100,
-        });
-      } else {
-        this._log("testing", "cpu-unstable", `x${ratio} is UNSTABLE — trying voltage adjustment`, {
-          stable: false, temp: result.maxTemp, errors: result.errors,
+        this._log("testing", "cpu-step", `Setting CPU multiplier x${ratio} (${ratio * 100} MHz) via SceWin...`, {
+          clock: ratio * 100,
         });
 
-        if (!voltageSettingName) {
-          this._log("testing", "cpu-no-voltage", "No voltage setting discovered — cannot adjust voltage, rolling back");
-          await this.scewin.applyCpuMultiplier(lastGoodRatio, ratioSettingName);
+        // Write the new ratio to BIOS NVRAM
+        const applyResult = await this.scewin.applyCpuMultiplier(ratio, ratioSettingName);
+        if (!applyResult.success) {
+          this._log("testing", "cpu-apply-error", `Failed to write ratio x${ratio} to BIOS: ${applyResult.error}`);
           break;
         }
 
-        // Try increasing voltage slightly
-        let voltageFixed = false;
-        const baseVoltage = analysis.isAMD ? 1.20 : 1.25;
-        const maxVoltage = analysis.safeCeilingVoltage;
+        this._log("testing", "cpu-written", `Ratio x${ratio} written to BIOS NVRAM — system reboot required for changes to take effect`);
 
-        for (let v = baseVoltage; v <= maxVoltage; v += 0.01) {
-          if (this._stopRequested) break;
+        // Save state and trigger reboot
+        const saved = await this._rebootAndResume({
+          resumePhase: "cpu",
+          subPhase: "ratio-hunt",
+          testingRatio: ratio,
+          lastGoodRatio,
+          lastGoodVoltage,
+          analysis: {
+            stockTurboRatio: analysis.stockTurboRatio,
+            safeCeilingRatio: analysis.safeCeilingRatio,
+            safeCeilingVoltage: analysis.safeCeilingVoltage,
+            cpuUnlocked: analysis.cpuUnlocked,
+            isIntel: analysis.isIntel,
+            isAMD: analysis.isAMD,
+            coolingQuality: analysis.coolingQuality,
+            cpu: analysis.cpu,
+            gpu: analysis.gpu,
+            ram: analysis.ram,
+          },
+          biosMap: this.biosMap,
+        });
 
-          const vRounded = Math.round(v * 100) / 100;
-          this._log("testing", "cpu-voltage", `Trying voltage ${vRounded}V at x${ratio}`, { voltage: vRounded });
-
-          const vResult = await this.scewin.applyCpuVoltage(vRounded, voltageSettingName);
-          if (!vResult.success) continue;
-
-          const vStress = await this.runExtendedStressTest(10, { maxTemp: 95 });
-          if (vStress.stable) {
+        if (saved) {
+          // Reboot initiated — execution stops here. Will resume after reboot.
+          return { pending: true, message: "Rebooting to apply BIOS changes..." };
+        } else {
+          // Reboot failed — fall back to testing without reboot (less accurate)
+          this._log("testing", "reboot-fallback", "Reboot failed — testing at current clocks (BIOS changes may not be active yet)");
+          const stress = await this.runExtendedStressTest(10, { maxTemp: 95 });
+          if (stress.stable) {
             lastGoodRatio = ratio;
-            lastGoodVoltage = vRounded;
-            voltageFixed = true;
-            this._log("testing", "cpu-voltage-stable", `x${ratio} at ${vRounded}V is STABLE`, {
-              stable: true, temp: vStress.maxTemp, clock: ratio * 100, voltage: vRounded,
+            this._log("testing", "cpu-stable", `x${ratio} stress test passed (note: BIOS change may not be active without reboot)`, {
+              stable: true, temp: stress.maxTemp, clock: ratio * 100,
             });
+          } else {
+            this._log("testing", "cpu-unstable", `x${ratio} stress test failed — stopping ratio hunt`, {
+              stable: false, temp: stress.maxTemp,
+            });
+            // Roll back to last good
+            await this.scewin.applyCpuMultiplier(lastGoodRatio, ratioSettingName);
             break;
           }
         }
+      }
 
-        if (!voltageFixed) {
-          this._log("testing", "cpu-rollback", `Rolling back to last good: x${lastGoodRatio}`, { clock: lastGoodRatio * 100 });
-          await this.scewin.applyCpuMultiplier(lastGoodRatio, ratioSettingName);
-          if (lastGoodVoltage) await this.scewin.applyCpuVoltage(lastGoodVoltage, voltageSettingName);
-          break;
+      // Move to voltage optimization if we have a voltage setting
+      subPhase = voltageSettingName ? "voltage-optimize" : "done";
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // PHASE 2: VOLTAGE OPTIMIZATION — Find the lowest stable voltage
+    // for the max stable ratio found above. This reduces heat/power.
+    //
+    // Strategy: Start from a safe default voltage and step DOWN in
+    // 10mV increments until instability is found. The last stable
+    // voltage is the optimal one (lowest safe voltage for the clock).
+    //
+    // For Intel K-series: Start around 1.30V, step down to ~1.10V
+    // For AMD Ryzen: Start around 1.25V, step down to ~1.05V
+    // ═══════════════════════════════════════════════════════════════════
+    if (subPhase === "voltage-optimize" && voltageSettingName && !this._stopRequested) {
+      this._setPhase("testing", 50);
+
+      // Determine voltage range based on CPU type
+      const voltStart = analysis.isAMD ? 1.25 : 1.30; // safe starting voltage
+      const voltFloor = analysis.isAMD ? 1.05 : 1.10;  // absolute minimum to try
+      const voltStep = 0.010; // 10mV steps
+
+      // If resuming from a voltage test, pick up from where we stopped
+      let currentVoltage = voltStart;
+      if (resumeState && resumeState.subPhase === "voltage-optimize" && resumeState.testingVoltage) {
+        // We already tested testingVoltage and it was stable (since we continued)
+        currentVoltage = resumeState.testingVoltage - voltStep;
+      }
+
+      this._log("testing", "voltage-start", `Voltage optimization at x${lastGoodRatio}: starting at ${voltStart}V, stepping down by ${voltStep * 1000}mV to find minimum stable voltage`);
+
+      // First, set the voltage mode to "Override" / "Manual" if we can
+      if (voltageModeSettingName) {
+        this._log("testing", "voltage-mode", `Setting voltage mode to manual via "${voltageModeSettingName}"...`);
+        // Most BIOS: 0x0 = Auto, 0x1 = Manual/Override, 0x2 = Offset
+        await this.scewin.writeSetting(voltageModeSettingName, 1);
+      }
+
+      if (!lastGoodVoltage) lastGoodVoltage = voltStart;
+
+      for (let v = currentVoltage; v >= voltFloor; v -= voltStep) {
+        if (this._stopRequested) break;
+
+        const vRounded = Math.round(v * 1000) / 1000;
+        const stepPct = 50 + ((voltStart - vRounded) / (voltStart - voltFloor)) * 10;
+        this._setPhase("testing", Math.round(stepPct));
+
+        this._log("testing", "cpu-voltage-step", `Writing ${vRounded}V to BIOS for x${lastGoodRatio}...`);
+
+        const vResult = await this.scewin.applyCpuVoltage(vRounded, voltageSettingName);
+        if (!vResult.success) {
+          this._log("testing", "cpu-voltage-write-fail", `Failed to write voltage ${vRounded}V: ${vResult.error}`);
+          continue;
+        }
+
+        // Save state and reboot to apply voltage change
+        const saved = await this._rebootAndResume({
+          resumePhase: "cpu",
+          subPhase: "voltage-optimize",
+          testingVoltage: vRounded,
+          lastGoodRatio,
+          lastGoodVoltage,
+          analysis: {
+            stockTurboRatio: analysis.stockTurboRatio,
+            safeCeilingRatio: analysis.safeCeilingRatio,
+            safeCeilingVoltage: analysis.safeCeilingVoltage,
+            cpuUnlocked: analysis.cpuUnlocked,
+            isIntel: analysis.isIntel,
+            isAMD: analysis.isAMD,
+            coolingQuality: analysis.coolingQuality,
+            cpu: analysis.cpu,
+            gpu: analysis.gpu,
+            ram: analysis.ram,
+          },
+          biosMap: this.biosMap,
+        });
+
+        if (saved) {
+          return { pending: true, message: `Rebooting to test ${vRounded}V...` };
+        } else {
+          // Reboot failed — test without reboot (inaccurate)
+          this._log("testing", "reboot-fallback", "Reboot failed — testing voltage without reboot");
+          const vStress = await this.runExtendedStressTest(10, { maxTemp: 95 });
+          if (vStress.stable) {
+            lastGoodVoltage = vRounded;
+            this._log("testing", "cpu-voltage-stable", `${vRounded}V STABLE (reboot-less test)`, {
+              stable: true, temp: vStress.maxTemp, voltage: vRounded,
+            });
+          } else {
+            this._log("testing", "cpu-voltage-floor", `${vRounded}V UNSTABLE — minimum voltage is ${lastGoodVoltage}V`, {
+              stable: false, voltage: vRounded, minVoltage: lastGoodVoltage,
+            });
+            // Roll back to last good voltage
+            await this.scewin.applyCpuVoltage(lastGoodVoltage, voltageSettingName);
+            break;
+          }
         }
       }
     }
+
+    // If we need a final reboot to ensure last-good settings are active
+    if (needsReboot && !this._stopRequested) {
+      this._log("testing", "final-reboot", `Applying final settings: x${lastGoodRatio} at ${lastGoodVoltage || "auto"}V — one last reboot...`);
+      await this.scewin.applyCpuMultiplier(lastGoodRatio, ratioSettingName);
+      if (lastGoodVoltage && voltageSettingName) {
+        await this.scewin.applyCpuVoltage(lastGoodVoltage, voltageSettingName);
+      }
+      // Don't reboot again for this — let the final validation handle it
+    }
+
+    const gainMHz = (lastGoodRatio - stockTurbo) * 100;
+    this._log("testing", "cpu-complete", `CPU OC complete: x${lastGoodRatio} (${lastGoodRatio * 100} MHz) at ${lastGoodVoltage || "auto"}V — ${gainMHz >= 0 ? "+" : ""}${gainMHz} MHz vs stock turbo`, {
+      finalRatio: lastGoodRatio, finalVoltage: lastGoodVoltage, gainMHz,
+    });
 
     return {
       finalRatio: lastGoodRatio,
       finalVoltage: lastGoodVoltage,
       finalMHz: lastGoodRatio * 100,
-      gainMHz: (lastGoodRatio - startRatio) * 100,
+      gainMHz,
+      stockTurboMHz: stockTurbo * 100,
     };
   }
 
   // ── Memory Phase ──────────────────────────────────────────────────
+  // Strategy:
+  //  1. Check if XMP/EXPO/DOCP is enabled. If not, enable it.
+  //  2. Verify RAM is running at its rated speed (e.g. DDR5-6000 = 6000 MHz).
+  //  3. If BIOS timing settings are available, try tightening primary timings
+  //     (tCL, tRCD, tRP, tRAS) one step at a time with stability testing.
+  //  4. Memory changes via SceWin also require reboot to take effect.
+  // ────────────────────────────────────────────────────────────────────
 
-  async _memoryPhase() {
+  async _memoryPhase(resumeState = null) {
     if (!this.scewin.available) {
       this._log("testing", "skip-mem", "SceWin not available — skipping memory phase");
       return null;
     }
 
     this._setPhase("testing", 55);
-    this._log("testing", "mem-start", "Starting memory overclock phase");
+    this._log("testing", "mem-start", "Starting memory optimization phase");
 
-    // Check current memory settings
+    // Check current memory settings from BIOS
     const memSettings = await this.scewin.getMemorySettings();
     if (!memSettings.success) {
       this._log("testing", "mem-error", "Could not read memory settings: " + memSettings.error);
       return null;
     }
 
-    // Use discovered XMP setting name if available
+    // Read actual RAM info from Windows
+    const ramInfo = await this.hw.detectRAM();
+    const ratedSpeed = ramInfo.ratedSpeed || 0;
+    const currentSpeed = ramInfo.currentSpeed || 0;
+    const stickCount = ramInfo.sticks ? ramInfo.sticks.length : 0;
+
+    this._log("testing", "mem-info", `RAM: ${ramInfo.totalGB}GB (${stickCount} sticks) | Rated: ${ratedSpeed} MHz | Current: ${currentSpeed} MHz | Part: ${ramInfo.sticks?.[0]?.partNumber || "unknown"}`);
+
     const xmpSettingName = this.biosMap && this.biosMap.xmpProfile ? this.biosMap.xmpProfile : null;
+    const result = {
+      xmpEnabled: false,
+      xmpAlreadyEnabled: false,
+      ratedSpeed,
+      currentSpeed,
+      timingsTightened: false,
+      timingsChanged: [],
+      stable: true,
+    };
 
-    // Try enabling XMP if not already enabled
+    // ── Step 1: Ensure XMP / EXPO / DOCP is enabled ──
     const xmpSetting = memSettings.settings.xmpProfile;
-    if (xmpSetting && (xmpSetting.value === "0x0" || xmpSetting.value === "0x00")) {
-      this._log("testing", "mem-xmp", `XMP is disabled — enabling XMP Profile 1${xmpSettingName ? ` via discovered setting "${xmpSettingName}"` : ""}`);
-      const xmpResult = await this.scewin.applyMemoryXMP(1, xmpSettingName);
-      if (xmpResult.success) {
-        this._log("testing", "mem-xmp-applied", "XMP Profile 1 enabled");
+    if (xmpSetting) {
+      const xmpValue = xmpSetting.value || "0x0";
+      const isDisabled = xmpValue === "0x0" || xmpValue === "0x00" || (xmpSetting.currentLabel || "").toLowerCase().includes("disabled") || (xmpSetting.currentLabel || "").toLowerCase().includes("auto");
 
-        // Test memory stability
-        this._log("testing", "mem-stress", "Running 10-minute memory stability test...");
-        const memStress = await this.runExtendedStressTest(10, { maxTemp: 95 });
+      if (isDisabled) {
+        this._log("testing", "mem-xmp-off", `XMP/EXPO is currently disabled (value: ${xmpValue}, label: "${xmpSetting.currentLabel || ""}")${xmpSettingName ? ` — enabling via "${xmpSettingName}"` : ""}`);
 
-        if (memStress.stable) {
-          this._log("testing", "mem-stable", "Memory is STABLE with XMP enabled");
-          return { xmpEnabled: true, stable: true };
+        // Find profile 1 option value from the setting's options
+        let enableValue = 1;
+        if (xmpSetting.options && xmpSetting.options.length > 1) {
+          // Profile 1 is usually the second option (first is Disabled/Auto)
+          const profile1 = xmpSetting.options.find(o =>
+            (o.label || "").toLowerCase().includes("profile 1") ||
+            (o.label || "").toLowerCase().includes("xmp 1") ||
+            (o.label || "").toLowerCase().includes("expo 1")
+          ) || xmpSetting.options[1]; // fallback to second option
+          if (profile1) {
+            enableValue = parseInt(profile1.value, 16);
+            this._log("testing", "mem-xmp-profile", `Using XMP option: "${profile1.label}" (value: ${profile1.value})`);
+          }
+        }
+
+        const xmpResult = await this.scewin.applyMemoryXMP(enableValue, xmpSettingName);
+        if (xmpResult.success) {
+          this._log("testing", "mem-xmp-written", "XMP/EXPO profile written to BIOS NVRAM — requires reboot to take effect");
+          result.xmpEnabled = true;
+
+          // Note: XMP change requires reboot. If we're also doing CPU OC with reboots,
+          // the XMP change will be picked up on the next reboot. Otherwise we'd need
+          // to trigger one here. For now, log it and continue — the final validation
+          // or next CPU OC reboot will activate it.
+          this._log("testing", "mem-xmp-note", "XMP will be active after next system reboot. If CPU OC didn't trigger a reboot, memory may still be at JEDEC speeds.");
         } else {
-          this._log("testing", "mem-unstable", "Memory UNSTABLE with XMP — rolling back");
-          await this.scewin.applyMemoryXMP(0, xmpSettingName);
-          return { xmpEnabled: false, stable: false, errors: memStress.errors };
+          this._log("testing", "mem-xmp-fail", `Failed to enable XMP: ${xmpResult.error}`);
+        }
+      } else {
+        this._log("testing", "mem-xmp-ok", `XMP/EXPO is already enabled (value: ${xmpValue}, label: "${xmpSetting.currentLabel || ""}")`);
+        result.xmpEnabled = true;
+        result.xmpAlreadyEnabled = true;
+      }
+    } else {
+      this._log("testing", "mem-no-xmp", "No XMP/EXPO/DOCP setting found in BIOS export — cannot check or enable memory profiles");
+    }
+
+    // ── Step 2: Verify memory speed matches rated ──
+    if (ratedSpeed > 0 && currentSpeed > 0) {
+      const speedRatio = currentSpeed / ratedSpeed;
+      if (speedRatio < 0.95) {
+        this._log("testing", "mem-speed-mismatch", `WARNING: RAM running at ${currentSpeed} MHz but rated for ${ratedSpeed} MHz (${Math.round(speedRatio * 100)}%). XMP may not be active or may need a reboot.`, {
+          currentSpeed, ratedSpeed, ratio: speedRatio,
+        });
+      } else {
+        this._log("testing", "mem-speed-ok", `RAM speed verified: ${currentSpeed} MHz (rated ${ratedSpeed} MHz)`);
+      }
+    }
+
+    // ── Step 3: Try tightening primary timings ──
+    // Only attempt if we have the BIOS settings AND the BIOS change log shows
+    // we're comfortable with SceWin writes working on this system
+    const ms = memSettings.settings;
+    const hasTimingSettings = ms.casLatency || ms.tRCD || ms.tRP || ms.tRAS;
+
+    if (hasTimingSettings) {
+      this._log("testing", "mem-timings", "Memory timing settings found in BIOS — analyzing current timings...");
+
+      // Read current timing values
+      const timings = {};
+      const timingNames = [
+        { key: "casLatency", name: "CAS Latency (tCL)", min: 14, safeStep: -1 },
+        { key: "tRCD", name: "tRCD", min: 14, safeStep: -1 },
+        { key: "tRP", name: "tRP", min: 14, safeStep: -1 },
+        { key: "tRAS", name: "tRAS", min: 28, safeStep: -2 },
+      ];
+
+      for (const t of timingNames) {
+        const setting = ms[t.key];
+        if (setting && setting.value) {
+          const val = parseInt(setting.value, 16);
+          if (!isNaN(val) && val > 0 && val < 200) {
+            timings[t.key] = { current: val, min: t.min, step: t.safeStep, settingObj: setting };
+            this._log("testing", "mem-timing-read", `${t.name}: current = ${val} (raw: ${setting.value})`);
+          }
+        }
+      }
+
+      if (Object.keys(timings).length > 0) {
+        this._log("testing", "mem-timing-note", `Found ${Object.keys(timings).length} timing settings. Tightening timings improves latency but requires careful stability testing.`);
+        this._log("testing", "mem-timing-note2", "Memory timing changes require reboot to take effect. Each timing change will be logged but applied together with the next system reboot.");
+
+        // For each timing, try tightening by one step
+        for (const t of timingNames) {
+          if (this._stopRequested) break;
+          if (!timings[t.key]) continue;
+
+          const currentVal = timings[t.key].current;
+          const newVal = currentVal + t.safeStep; // safeStep is negative = tighter
+          const minVal = timings[t.key].min;
+
+          if (newVal < minVal) {
+            this._log("testing", "mem-timing-floor", `${t.name}: ${currentVal} already at or near minimum (floor: ${minVal}) — skipping`);
+            continue;
+          }
+
+          // Find the BIOS setting name for this timing
+          const settingName = Object.keys(this.scewin.currentSettings || {}).find(name => {
+            const lower = name.toLowerCase();
+            if (t.key === "casLatency") return lower.includes("cas") && (lower.includes("latency") || lower.includes("tcl"));
+            if (t.key === "tRCD") return lower.includes("trcd") || (lower.includes("ras") && lower.includes("cas"));
+            if (t.key === "tRP") return lower.includes("trp") || lower.includes("precharge");
+            if (t.key === "tRAS") return lower.includes("tras") || lower.includes("active");
+            return false;
+          });
+
+          if (settingName) {
+            this._log("testing", "mem-timing-set", `${t.name}: ${currentVal} → ${newVal} (tighter by ${Math.abs(t.safeStep)}) via "${settingName}"`);
+            const writeResult = await this.scewin.writeSetting(settingName, newVal);
+            if (writeResult.success) {
+              result.timingsChanged.push({ name: t.name, from: currentVal, to: newVal, setting: settingName });
+              result.timingsTightened = true;
+            } else {
+              this._log("testing", "mem-timing-fail", `Failed to write ${t.name}: ${writeResult.error}`);
+            }
+          } else {
+            this._log("testing", "mem-timing-no-setting", `Could not find BIOS setting name for ${t.name}`);
+          }
+        }
+
+        if (result.timingsTightened) {
+          this._log("testing", "mem-timing-written", `Wrote ${result.timingsChanged.length} timing changes to BIOS NVRAM. Changes take effect after reboot. Will verify stability during final validation.`);
         }
       }
     } else {
-      this._log("testing", "mem-xmp-ok", "XMP appears to already be enabled");
-      return { xmpEnabled: true, stable: true, alreadyEnabled: true };
+      this._log("testing", "mem-no-timings", "No individual timing settings (tCL/tRCD/tRP/tRAS) found in BIOS export — timing optimization skipped. XMP profile controls timings instead.");
     }
 
-    return null;
+    this._log("testing", "mem-complete", `Memory phase complete: XMP ${result.xmpEnabled ? (result.xmpAlreadyEnabled ? "already on" : "ENABLED") : "not available"} | Timings tightened: ${result.timingsTightened ? result.timingsChanged.map(c => `${c.name}: ${c.from}→${c.to}`).join(", ") : "no"}`);
+
+    return result;
   }
 
   // ── GPU Phase ─────────────────────────────────────────────────────
+  // GPU OC doesn't require reboot — nvidia-smi applies changes instantly.
+  // We increase the power limit in 5% steps and verify each change actually
+  // took effect by querying nvidia-smi after applying.
+  // ────────────────────────────────────────────────────────────────────
 
   async _gpuPhase() {
     this._setPhase("testing", 65);
@@ -1814,10 +2417,14 @@ class AIOverclockEngine {
     }
 
     const basePowerLimit = gpu.powerLimit;
+    const baseClockCore = gpu.clockCore || 0;
+    const baseClockMem = gpu.clockMem || 0;
     let lastGoodLimit = basePowerLimit;
-    const maxTemp = 90; // GPU thermal limit
+    const maxTemp = 90;
 
-    this._log("testing", "gpu-baseline", `GPU: ${gpu.name} | Power limit: ${basePowerLimit}W`, { power: basePowerLimit });
+    this._log("testing", "gpu-baseline", `GPU: ${gpu.name} | Power: ${basePowerLimit}W | Core: ${baseClockCore} MHz | Mem: ${baseClockMem} MHz | Temp: ${gpu.temp}C`, {
+      power: basePowerLimit, clockCore: baseClockCore, clockMem: baseClockMem, temp: gpu.temp,
+    });
 
     for (let pctIncrease = 5; pctIncrease <= 20; pctIncrease += 5) {
       if (this._stopRequested) break;
@@ -1827,32 +2434,80 @@ class AIOverclockEngine {
 
       this._log("testing", "gpu-step", `Setting GPU power limit to ${newLimit}W (+${pctIncrease}%)`, { power: newLimit });
 
-      await this.hw.gpuSetPowerLimit(newLimit);
+      const setResult = await this.hw.gpuSetPowerLimit(newLimit);
 
-      // Quick GPU stress test (5 minutes per step)
-      // Use getStats() which overlays HWiNFO sensor data for accurate GPU temps
+      // ── VERIFICATION: Read back the power limit to confirm it was applied ──
+      await new Promise(r => setTimeout(r, 2000)); // give nvidia-smi a moment
+      const verifyGpu = await this.hw.detectGPU();
+      const actualPL = verifyGpu.powerLimit || 0;
+      const plDiff = Math.abs(actualPL - newLimit);
+
+      if (plDiff > 5) {
+        this._log("testing", "gpu-verify-fail", `VERIFICATION FAILED: Requested ${newLimit}W but nvidia-smi reports ${actualPL}W (diff: ${plDiff}W). nvidia-smi may not have admin privileges or the GPU may not support this limit.`, {
+          requested: newLimit, actual: actualPL, diff: plDiff,
+        });
+        // If verification failed on the first step, the whole GPU OC won't work
+        if (pctIncrease === 5) {
+          this._log("testing", "gpu-abort", "GPU power limit change not taking effect — aborting GPU phase. Try running the app as Administrator.");
+          return { finalPowerLimit: basePowerLimit, gainWatts: 0, gainPct: 0, verified: false, error: "Power limit changes not applied — admin required" };
+        }
+        break;
+      }
+
+      this._log("testing", "gpu-verify-ok", `VERIFIED: Power limit confirmed at ${actualPL}W (requested ${newLimit}W)`, {
+        requested: newLimit, actual: actualPL,
+      });
+
+      // Stress test with GPU load
+      this._log("testing", "gpu-stress", `Running 5-minute GPU stress test at ${newLimit}W...`);
       const result = await this.runExtendedStressTest(5, { maxTemp, stressGpu: true });
-      const fullStats = await this.hw.getStats();
-      const gpuTemp = fullStats.gpu?.temp || 0;
+
+      // Read GPU stats after stress (most accurate under/just after load)
+      const postStats = await this.hw.getStats();
+      const gpuTemp = postStats.gpu?.temp || 0;
+      const gpuClockNow = postStats.gpu?.clockCore || 0;
+      const gpuPowerNow = postStats.gpu?.power || 0;
+
+      this._log("testing", "gpu-post-stress", `Post-stress: ${gpuTemp}C | Core: ${gpuClockNow} MHz | Power draw: ${gpuPowerNow}W (source: ${postStats.hwinfoActive ? "HWiNFO" : "nvidia-smi"})`, {
+        temp: gpuTemp, clock: gpuClockNow, power: gpuPowerNow,
+      });
 
       if (result.stable && gpuTemp < maxTemp) {
         lastGoodLimit = newLimit;
-        this._log("testing", "gpu-stable", `${newLimit}W is STABLE (GPU temp: ${gpuTemp}C, source: ${fullStats.hwinfoActive ? "HWiNFO64" : "nvidia-smi"})`, {
-          stable: true, temp: gpuTemp, power: newLimit,
+        this._log("testing", "gpu-stable", `${newLimit}W is STABLE — GPU boosted to ${gpuClockNow} MHz at ${gpuTemp}C`, {
+          stable: true, temp: gpuTemp, power: newLimit, clock: gpuClockNow,
         });
       } else {
-        this._log("testing", "gpu-rollback", `${newLimit}W unstable or too hot — rolling back to ${lastGoodLimit}W`, {
+        this._log("testing", "gpu-rollback", `${newLimit}W unstable or too hot (${gpuTemp}C) — rolling back to ${lastGoodLimit}W`, {
           stable: false, temp: gpuTemp,
         });
         await this.hw.gpuSetPowerLimit(lastGoodLimit);
+
+        // Verify rollback too
+        await new Promise(r => setTimeout(r, 1000));
+        const rollbackGpu = await this.hw.detectGPU();
+        this._log("testing", "gpu-rollback-verify", `Rolled back: power limit now ${rollbackGpu.powerLimit}W`);
         break;
       }
     }
 
+    // ── FINAL GPU VERIFICATION ──
+    const finalGpu = await this.hw.detectGPU();
+    const finalPL = finalGpu.powerLimit || basePowerLimit;
+    const gainW = finalPL - basePowerLimit;
+    const gainPct = Math.round((gainW / basePowerLimit) * 100);
+
+    this._log("testing", "gpu-complete", `GPU OC complete: ${finalPL}W (${gainPct >= 0 ? "+" : ""}${gainPct}%) | Verified power limit: ${finalPL}W | Core clock: ${finalGpu.clockCore || "?"}MHz`, {
+      finalPowerLimit: finalPL, gainWatts: gainW, gainPct, verified: true,
+    });
+
     return {
-      finalPowerLimit: lastGoodLimit,
-      gainWatts: lastGoodLimit - basePowerLimit,
-      gainPct: Math.round(((lastGoodLimit - basePowerLimit) / basePowerLimit) * 100),
+      finalPowerLimit: finalPL,
+      gainWatts: gainW,
+      gainPct,
+      verified: true,
+      baseClockCore,
+      finalClockCore: finalGpu.clockCore || 0,
     };
   }
 
@@ -1895,6 +2550,24 @@ class AIOverclockEngine {
     this.scewin.redetect();
     this.hw.hwinfo.redetect();
 
+    // ── CHECK FOR RESUME STATE (after reboot) ──
+    const resumeState = this._loadOcState();
+    if (resumeState) {
+      this._log("analyzing", "resume-detected", `Resuming AI OC after reboot (saved at ${resumeState.savedAt})`);
+      // Restore the log from before the reboot
+      if (resumeState.log && Array.isArray(resumeState.log)) {
+        this.log = [...resumeState.log];
+        this._log("analyzing", "log-restored", `Restored ${resumeState.log.length} log entries from before reboot`);
+      }
+      // Restore BIOS discovery map
+      if (resumeState.biosMap) {
+        this.biosMap = resumeState.biosMap;
+        this._log("analyzing", "biosmap-restored", "BIOS setting names restored from saved state");
+      }
+      // Clear the saved state now that we've loaded it
+      this._clearOcState();
+    }
+
     // Launch HWiNFO EARLY — sensor registry (VSB) needs 15-20s to populate after launch
     this._log("analyzing", "hwinfo-early", "Launching HWiNFO64 early so sensors have time to populate...");
     const hwinfoLaunch = await this.hw.hwinfo.ensureRunning();
@@ -1924,15 +2597,25 @@ class AIOverclockEngine {
       }
     }
 
-    this._log("analyzing", "start", `AI Auto-Overclock starting... SceWin: ${this.scewin.available ? "FOUND at " + this.scewin.scewinPath : "not found (GPU-only mode)"} | HWiNFO: ${this.hw.hwinfo.available ? "ACTIVE" : "not detected"}`);
+    this._log("analyzing", "start", `AI Auto-Overclock ${resumeState ? "RESUMING" : "starting"}... SceWin: ${this.scewin.available ? "FOUND at " + this.scewin.scewinPath : "not found (GPU-only mode)"} | HWiNFO: ${this.hw.hwinfo.available ? "ACTIVE" : "not detected"}`);
 
     try {
-      // Phase 1: Analyze hardware
-      const analysis = await this._analyzeHardware();
-      if (!analysis) {
-        this._setPhase("failed", 100);
-        this.running = false;
-        return { success: false, error: "Hardware analysis failed", log: this.log };
+      // Phase 1: Analyze hardware (skip full analysis if resuming — use saved data)
+      let analysis = null;
+      if (resumeState && resumeState.analysis) {
+        analysis = resumeState.analysis;
+        this._log("analyzing", "analysis-restored", `Using saved hardware analysis: ${analysis.cpu?.name || "?"} | Unlocked: ${analysis.cpuUnlocked} | Stock turbo: x${analysis.stockTurboRatio} | Ceiling: x${analysis.safeCeilingRatio}`);
+        // Still run BIOS discovery if we don't have it cached
+        if (!this.biosMap) {
+          await this._discoverBiosSettings();
+        }
+      } else {
+        analysis = await this._analyzeHardware();
+        if (!analysis) {
+          this._setPhase("failed", 100);
+          this.running = false;
+          return { success: false, error: "Hardware analysis failed", log: this.log };
+        }
       }
 
       if (this._stopRequested) {
@@ -1941,10 +2624,17 @@ class AIOverclockEngine {
         return { success: false, error: "Stopped by user", log: this.log };
       }
 
-      // Phase 2: CPU Overclock
+      // Phase 2: CPU Overclock (pass resume state if resuming CPU phase)
       let cpuResult = null;
       if (options.skipCpu !== true) {
-        cpuResult = await this._cpuOcPhase(analysis);
+        const cpuResumeState = resumeState && resumeState.resumePhase === "cpu" ? resumeState : null;
+        cpuResult = await this._cpuOcPhase(analysis, cpuResumeState);
+
+        // If CPU phase returned pending (waiting for reboot), stop here
+        if (cpuResult && cpuResult.pending) {
+          this.running = false;
+          return { success: true, pending: true, message: cpuResult.message, log: this.log };
+        }
       }
 
       if (this._stopRequested) {
@@ -1953,10 +2643,11 @@ class AIOverclockEngine {
         return { success: false, error: "Stopped by user", log: this.log };
       }
 
-      // Phase 3: Memory
+      // Phase 3: Memory (pass resume state if resuming memory phase)
       let memResult = null;
       if (options.skipMemory !== true) {
-        memResult = await this._memoryPhase();
+        const memResumeState = resumeState && resumeState.resumePhase === "memory" ? resumeState : null;
+        memResult = await this._memoryPhase(memResumeState);
       }
 
       if (this._stopRequested) {
@@ -1965,7 +2656,7 @@ class AIOverclockEngine {
         return { success: false, error: "Stopped by user", log: this.log };
       }
 
-      // Phase 4: GPU
+      // Phase 4: GPU (no reboot needed — applies instantly)
       let gpuResult = null;
       if (options.skipGpu !== true) {
         gpuResult = await this._gpuPhase();
@@ -2009,6 +2700,9 @@ class AIOverclockEngine {
         fs.writeFileSync(profilePath, JSON.stringify(profile, null, 2));
       } catch (e) { /* non-fatal */ }
 
+      // Clean up any leftover auto-start tasks
+      this._clearOcState();
+
       const finalPhase = profile.stable ? "stable" : "failed";
       this._setPhase(finalPhase, 100);
       this._log(finalPhase, "complete", this._generateSummary(profile));
@@ -2019,6 +2713,7 @@ class AIOverclockEngine {
     } catch (e) {
       this._setPhase("failed", 100);
       this._log("failed", "error", "Unexpected error: " + e.message);
+      this._clearOcState(); // clean up on error
       this.running = false;
       return { success: false, error: e.message, log: this.log };
     }
@@ -2334,26 +3029,46 @@ class AIOverclockEngine {
     const lines = ["=== AI Auto-Overclock Summary ==="];
 
     if (profile.cpu) {
-      lines.push(`CPU: x${profile.cpu.finalRatio} (${profile.cpu.finalMHz} MHz) — gained ${profile.cpu.gainMHz} MHz`);
-      if (profile.cpu.finalVoltage) lines.push(`  Voltage: ${profile.cpu.finalVoltage}V`);
+      if (profile.cpu.pending) {
+        lines.push("CPU: In progress (waiting for reboot)");
+      } else {
+        const stockNote = profile.cpu.stockTurboMHz ? ` (stock turbo: ${profile.cpu.stockTurboMHz} MHz)` : "";
+        lines.push(`CPU: x${profile.cpu.finalRatio} (${profile.cpu.finalMHz} MHz) — ${profile.cpu.gainMHz >= 0 ? "+" : ""}${profile.cpu.gainMHz} MHz${stockNote}`);
+        if (profile.cpu.finalVoltage) lines.push(`  Voltage: ${profile.cpu.finalVoltage}V (optimized — lowest stable)`);
+      }
     } else {
       lines.push("CPU: No changes (skipped or unavailable)");
     }
 
     if (profile.memory) {
-      lines.push(`Memory: XMP ${profile.memory.xmpEnabled ? "enabled" : "not applied"}${profile.memory.alreadyEnabled ? " (was already on)" : ""}`);
+      const xmpStatus = profile.memory.xmpEnabled
+        ? (profile.memory.xmpAlreadyEnabled ? "already enabled" : "ENABLED")
+        : "not available";
+      lines.push(`Memory: XMP/EXPO ${xmpStatus}`);
+      if (profile.memory.ratedSpeed) lines.push(`  Speed: ${profile.memory.currentSpeed || "?"} MHz (rated ${profile.memory.ratedSpeed} MHz)`);
+      if (profile.memory.timingsTightened && profile.memory.timingsChanged.length > 0) {
+        const changes = profile.memory.timingsChanged.map(c => `${c.name}: ${c.from}→${c.to}`).join(", ");
+        lines.push(`  Timings tightened: ${changes}`);
+      }
     } else {
       lines.push("Memory: No changes (skipped or unavailable)");
     }
 
     if (profile.gpu) {
-      lines.push(`GPU: ${profile.gpu.finalPowerLimit}W (+${profile.gpu.gainPct}%)`);
+      if (profile.gpu.verified === false) {
+        lines.push(`GPU: Changes could not be verified — ${profile.gpu.error || "unknown"}`);
+      } else {
+        lines.push(`GPU: ${profile.gpu.finalPowerLimit}W (${profile.gpu.gainPct >= 0 ? "+" : ""}${profile.gpu.gainPct}%) — VERIFIED`);
+        if (profile.gpu.baseClockCore && profile.gpu.finalClockCore) {
+          lines.push(`  Core clock: ${profile.gpu.baseClockCore} → ${profile.gpu.finalClockCore} MHz`);
+        }
+      }
     } else {
       lines.push("GPU: No changes (skipped or unavailable)");
     }
 
     if (profile.validation) {
-      lines.push(`Validation: ${profile.validation.stable ? "PASSED" : "FAILED"} (max temp: ${profile.validation.maxTemp}C)`);
+      lines.push(`Validation: ${profile.validation.stable ? "PASSED" : "FAILED"} (max temp: ${profile.validation.maxTemp}C, avg: ${profile.validation.avgTemp}C)`);
     }
 
     lines.push(`Overall: ${profile.stable ? "STABLE" : "UNSTABLE"}`);
@@ -3013,6 +3728,10 @@ class HardwareMonitor {
   aiStop() {
     this.aiEngine.stop();
     return { success: true };
+  }
+
+  aiHasResumeState() {
+    return this.aiEngine.hasResumeState();
   }
 }
 

@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld("api", {
   hwAiAutoOC: (opts) => ipcRenderer.invoke("hw-ai-auto-oc", opts),
   hwAiProgress: () => ipcRenderer.invoke("hw-ai-progress"),
   hwAiStop: () => ipcRenderer.invoke("hw-ai-stop"),
+  hwAiHasResume: () => ipcRenderer.invoke("hw-ai-has-resume"),
   hwHwinfoStatus: () => ipcRenderer.invoke("hw-hwinfo-status"),
   hwHwinfoSensors: () => ipcRenderer.invoke("hw-hwinfo-sensors"),
   hwEnhancedStats: () => ipcRenderer.invoke("hw-enhanced-stats"),

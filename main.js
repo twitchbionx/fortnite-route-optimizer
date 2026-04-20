@@ -222,6 +222,22 @@ app.whenReady().then(async () => {
   } catch (e) {
     console.error("[BootCheck] Error during boot check:", e.message);
   }
+
+  // Check if we're resuming an AI OC process after reboot
+  // (either via --resume-oc flag or saved state file exists)
+  const isResumeOC = process.argv.includes("--resume-oc") || hardware.aiHasResumeState();
+  if (isResumeOC) {
+    console.log("[AI-OC] Resume state detected — auto-starting AI overclock...");
+    // Small delay to ensure window is fully loaded before starting
+    setTimeout(async () => {
+      try {
+        const result = await hardware.aiAutoOC({});
+        console.log("[AI-OC] Resume complete:", result.success ? "SUCCESS" : result.error || "FAILED");
+      } catch (e) {
+        console.error("[AI-OC] Resume error:", e.message);
+      }
+    }, 5000);
+  }
 });
 
 app.on("window-all-closed", () => {
@@ -411,6 +427,7 @@ ipcMain.handle("hw-scewin-restore", async () => await hardware.scewin.restoreBac
 ipcMain.handle("hw-ai-auto-oc", async (_, opts) => await hardware.aiAutoOC(opts));
 ipcMain.handle("hw-ai-progress", () => hardware.aiProgress());
 ipcMain.handle("hw-ai-stop", () => hardware.aiStop());
+ipcMain.handle("hw-ai-has-resume", () => hardware.aiHasResumeState());
 ipcMain.handle("hw-hwinfo-status", () => hardware.getHwinfoStatus());
 ipcMain.handle("hw-hwinfo-sensors", async () => await hardware.readHwinfoSensors());
 ipcMain.handle("hw-enhanced-stats", async () => await hardware.getEnhancedStats());
