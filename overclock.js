@@ -433,322 +433,176 @@ class SceWinManager {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
     const scewinDir = path.dirname(this.scewinPath);
-    const scewinExe = path.basename(this.scewinPath);
-    const localExport = "fn_export.txt";
-    const localExportFull = path.join(scewinDir, localExport);
-    const amisceOutput = path.join(scewinDir, "AMISCE.txt");
     const logFile = path.join(scewinDir, "fn_export_log.txt");
 
-    // Clean up old files
-    for (const f of [exportPath, localExportFull, amisceOutput, logFile]) {
-      try { fs.unlinkSync(f); } catch(e) {}
-    }
-
     // ═══════════════════════════════════════════════════════════════════
-    // Strategy v3.8.6: DIAGNOSTIC — Direct elevation + elevated file search
+    // Strategy v3.9.0: PRACTICAL APPROACH
     //
-    // What we know:
-    //  - Direct exe elevation (Verb=RunAs) → driver DOES load (v3.7.x proved this)
-    //  - ProcessStartInfo from elevated PS → driver won't load
-    //  - cmd /c from elevated PS → driver won't load
-    //  - Scheduled task as SYSTEM → didn't produce output (v3.8.5)
-    //  - Direct elevation exits with code 16, process doesn't hang
-    //  - No file found in scewin dir, System32, homedir, temp
+    // What we learned from v3.8.1–3.8.9:
+    //  - SCEWIN launched from Electron (any method) gives EXIT:16
+    //  - The user's own Export.bat works when run manually as admin
+    //  - nvram.txt (1.4MB) already exists from a previous manual export
+    //  - The BIOS settings rarely change, so re-exporting every time is wasteful
     //
-    // New approach: Run SCEWIN directly elevated, then use a SEPARATE
-    // elevated PowerShell to search the ENTIRE drive for recently created
-    // .txt files matching our patterns. The non-elevated Electron app
-    // might not be able to see files in protected directories.
-    //
-    // Also: run SCEWIN with /h (help) first to discover all available flags,
-    // and try /q (quiet) flag in case it suppresses "Press any key" and
-    // changes behavior.
+    // New approach (in order):
+    //  1. Check for existing export files (nvram.txt, fn_export.txt, etc.)
+    //     If any exist and are >100KB, parse them directly — no re-export needed
+    //  2. If no existing files, try running the user's Export.bat elevated
+    //  3. If that fails, try direct SCEWIN elevation
+    //  4. If everything fails, show clear instructions for manual export
     // ═══════════════════════════════════════════════════════════════════
 
-    let logContent = "";
-    const addLog = (msg) => { logContent += msg + "\n"; };
+    // Helper: try to parse a file and return settings if valid
+    const tryParseFile = (filePath) => {
+      try {
+        if (!fs.existsSync(filePath)) return null;
+        const raw = fs.readFileSync(filePath, "utf8");
+        if (raw.length < 100) return null;
 
-    // ── Step 1: Get SCEWIN help output to discover flags ──
-    addLog("[STEP1] Getting SCEWIN help flags...");
-    const helpPS = [
-      "try {",
-      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      `  $psi.FileName = '${this.scewinPath.replace(/'/g, "''")}'`,
-      "  $psi.Arguments = '/h'",
-      `  $psi.WorkingDirectory = '${scewinDir.replace(/'/g, "''")}'`,
-      "  $psi.Verb = 'RunAs'",
-      "  $psi.UseShellExecute = $true",
-      "  $psi.WindowStyle = 'Normal'",
-      "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      "  $proc.WaitForExit(10000)",
-      "  if (!$proc.HasExited) { try { $proc.Kill() } catch {} }",
-      "  Write-Output \"HELP_EXIT:$($proc.ExitCode)\"",
-      "} catch { Write-Output \"HELP_ERROR:$($_.Exception.Message)\" }",
-    ].join("\n");
-    const helpResult = await runPS(helpPS, 20000);
-    addLog(`Help result: ${helpResult.output || ""} ${helpResult.error || ""}`);
+        // Try AMISCE script format parser
+        const settings = this._parseExport(raw);
+        let count = Object.keys(settings).length;
+        if (count > 5) return { settings, count, path: filePath, method: "existing-file" };
 
-    // ── Step 2: Run SCEWIN with direct elevation, multiple flag combos ──
-    // Try /o /s with path, /o /s with simple name, /o alone, and /o /q variants
-    const attempts = [
-      { args: `/o /s "${localExportFull}"`, label: "/o /s absolute" },
-      { args: `/o /s ${localExport}`, label: "/o /s relative" },
-      { args: "/o", label: "/o only" },
-      { args: `/o /q /s "${localExportFull}"`, label: "/o /q /s absolute" },
-      { args: `/o /q /s ${localExport}`, label: "/o /q /s relative" },
-      { args: "/o /q", label: "/o /q only" },
-      { args: `/o /lang en /s "${localExportFull}"`, label: "/o /lang en /s" },
+        // Try alternate parser
+        const altSettings = this._parseExportAlt(raw);
+        count = Object.keys(altSettings).length;
+        if (count > 5) return { settings: altSettings, count, path: filePath, method: "existing-file-alt" };
+
+        return null;
+      } catch(e) { return null; }
+    };
+
+    // ── Step 1: Check existing export files ──
+    // Don't delete anything! Use what's already there.
+    const existingFiles = [
+      path.join(scewinDir, "nvram.txt"),        // SCEWIN default output name
+      path.join(scewinDir, "fn_export.txt"),     // our custom name
+      path.join(scewinDir, "AMISCE.txt"),        // AMISCE default name
+      exportPath,                                // our target path
     ];
 
-    for (const attempt of attempts) {
-      addLog(`[ATTEMPT] ${attempt.label}: ${attempt.args}`);
+    // Also scan scewin dir for any large .txt files that could be exports
+    try {
+      const files = fs.readdirSync(scewinDir);
+      for (const f of files) {
+        if (f.endsWith(".txt") || f.endsWith(".TXT")) {
+          const fp = path.join(scewinDir, f);
+          if (!existingFiles.includes(fp)) {
+            try {
+              const stat = fs.statSync(fp);
+              if (stat.size > 100000) existingFiles.push(fp); // >100KB = likely an export
+            } catch(e) {}
+          }
+        }
+      }
+    } catch(e) {}
+
+    for (const filePath of existingFiles) {
+      const result = tryParseFile(filePath);
+      if (result) {
+        this.currentSettings = result.settings;
+        if (filePath !== exportPath) {
+          try { fs.copyFileSync(filePath, exportPath); } catch(e) {}
+        }
+        return {
+          success: true,
+          settings: result.settings,
+          settingCount: result.count,
+          method: result.method,
+          source: filePath,
+        };
+      }
+    }
+
+    // ── Step 2: Try running user's Export.bat if it exists ──
+    const userExportBat = path.join(scewinDir, "Export.bat");
+    if (fs.existsSync(userExportBat)) {
       const psScript = [
         "try {",
         "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-        `  $psi.FileName = '${this.scewinPath.replace(/'/g, "''")}'`,
-        `  $psi.Arguments = '${attempt.args.replace(/'/g, "''")}'`,
+        `  $psi.FileName = '${userExportBat.replace(/'/g, "''")}'`,
         `  $psi.WorkingDirectory = '${scewinDir.replace(/'/g, "''")}'`,
         "  $psi.Verb = 'RunAs'",
         "  $psi.UseShellExecute = $true",
         "  $psi.WindowStyle = 'Normal'",
         "  $proc = [System.Diagnostics.Process]::Start($psi)",
-        "  $waited = $proc.WaitForExit(15000)",
-        "  if (!$proc.HasExited) {",
-        "    try { $proc.Kill() } catch {}",
-        "    Write-Output 'KILLED'",
-        "  } else {",
-        "    Write-Output \"EXIT:$($proc.ExitCode)\"",
-        "  }",
-        "} catch { Write-Output \"ERR:$($_.Exception.Message)\" }",
+        "  $proc.WaitForExit(60000)",
+        "  if (!$proc.HasExited) { try { $proc.Kill() } catch {} }",
+        "  Write-Output \"BAT_EXIT:$($proc.ExitCode)\"",
+        "} catch { Write-Output \"BAT_ERROR:$($_.Exception.Message)\" }",
       ].join("\n");
 
-      const result = await runPS(psScript, 25000);
-      addLog(`  Result: ${(result.output || "").trim()}`);
+      await runPS(psScript, 75000);
+      await new Promise(r => setTimeout(r, 3000));
 
-      await new Promise(r => setTimeout(r, 2000));
-
-      // Quick check if file appeared
-      if (fs.existsSync(localExportFull) || fs.existsSync(amisceOutput) || fs.existsSync(exportPath)) {
-        addLog("  FILE FOUND after this attempt!");
-        break;
+      // Check for new files
+      for (const filePath of existingFiles) {
+        const result = tryParseFile(filePath);
+        if (result) {
+          this.currentSettings = result.settings;
+          if (filePath !== exportPath) {
+            try { fs.copyFileSync(filePath, exportPath); } catch(e) {}
+          }
+          return {
+            success: true,
+            settings: result.settings,
+            settingCount: result.count,
+            method: "export-bat",
+            source: filePath,
+          };
+        }
       }
     }
 
-    // ── Step 3: Elevated file search ──
-    // Use an elevated PowerShell to search for recently created .txt files
-    // in directories we might not be able to see as a normal user
-    addLog("[STEP3] Running elevated file search...");
-
-    const searchPS = [
-      "$ErrorActionPreference = 'Continue'",
-      "$results = @()",
-      "# Search common locations for recent .txt files",
-      "$searchDirs = @(",
-      `  '${scewinDir.replace(/'/g, "''")}',`,
-      "  'C:\\Windows\\System32',",
-      "  'C:\\Windows',",
-      "  'C:\\Windows\\SysWOW64',",
-      "  'C:\\Windows\\Temp',",
-      `  '${os.homedir().replace(/'/g, "''")}',`,
-      `  '${os.tmpdir().replace(/'/g, "''")}',`,
-      "  'C:\\'",
-      ")",
-      "$cutoff = (Get-Date).AddMinutes(-5)",
-      "foreach ($d in $searchDirs) {",
-      "  try {",
-      "    Get-ChildItem $d -Filter '*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $cutoff } | ForEach-Object {",
-      "      $results += \"FOUND: $($_.FullName) | Size: $($_.Length) | Modified: $($_.LastWriteTime)\"",
-      "    }",
-      "  } catch {}",
-      "}",
-      "# Also search for AMISCE specifically",
-      "foreach ($d in $searchDirs) {",
-      "  try {",
-      "    Get-ChildItem $d -Filter 'AMISCE*' -File -ErrorAction SilentlyContinue | ForEach-Object {",
-      "      $results += \"AMISCE: $($_.FullName) | Size: $($_.Length) | Modified: $($_.LastWriteTime)\"",
-      "    }",
-      "  } catch {}",
-      "}",
-      "# Check for amifldrv64.sys (driver file)",
-      `if (Test-Path '${path.join(scewinDir, "amifldrv64.sys").replace(/'/g, "''")}') {`,
-      "  $results += 'DRIVER_EXISTS: amifldrv64.sys found in scewin dir'",
-      "} else {",
-      "  $results += 'DRIVER_MISSING: amifldrv64.sys NOT in scewin dir'",
-      "}",
-      "# Check what's in the scewin directory",
-      `Get-ChildItem '${scewinDir.replace(/'/g, "''")}' -File -ErrorAction SilentlyContinue | ForEach-Object {`,
-      "  $results += \"SCEWIN_DIR: $($_.Name) | Size: $($_.Length) | Modified: $($_.LastWriteTime)\"",
-      "}",
-      "# Check loaded drivers for amisce",
-      "try {",
-      "  $drv = Get-WmiObject Win32_SystemDriver | Where-Object { $_.Name -like '*ami*' -or $_.Name -like '*fldrv*' }",
-      "  if ($drv) { $results += \"LOADED_DRIVER: $($drv.Name) State: $($drv.State)\" }",
-      "  else { $results += 'NO_AMI_DRIVER_LOADED' }",
-      "} catch { $results += 'DRIVER_CHECK_ERROR' }",
-      "$results -join '`n'",
-    ].join("\n");
-
-    const encodedSearch = Buffer.from(searchPS, "utf16le").toString("base64");
-    const elevateSearchPS = [
-      "try {",
-      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      "  $psi.FileName = 'powershell.exe'",
-      `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedSearch}'`,
-      "  $psi.Verb = 'RunAs'",
-      "  $psi.UseShellExecute = $false",
-      "  $psi.RedirectStandardOutput = $true",
-      "  $psi.RedirectStandardError = $true",
-      "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      "  $out = $proc.StandardOutput.ReadToEnd()",
-      "  $proc.WaitForExit(30000)",
-      "  Write-Output $out",
-      "} catch { Write-Output \"SEARCH_ERROR:$($_.Exception.Message)\" }",
-    ].join("\n");
-
-    // Wait, we can't use Verb=RunAs + UseShellExecute=$false. Use the elevated approach:
-    // Save search results to the log file from inside elevated PS
-    const searchPS2 = [
-      "$ErrorActionPreference = 'Continue'",
-      `$logFile = '${logFile.replace(/'/g, "''")}'`,
-      "Add-Content $logFile '[ELEVATED_SEARCH]'",
-      "# Search common locations for recent .txt files",
-      "$searchDirs = @(",
-      `  '${scewinDir.replace(/'/g, "''")}',`,
-      "  'C:\\Windows\\System32',",
-      "  'C:\\Windows',",
-      "  'C:\\Windows\\SysWOW64',",
-      "  'C:\\Windows\\Temp',",
-      `  '${os.homedir().replace(/'/g, "''")}',`,
-      `  '${os.tmpdir().replace(/'/g, "''")}',`,
-      "  'C:\\'",
-      ")",
-      "$cutoff = (Get-Date).AddMinutes(-5)",
-      "foreach ($d in $searchDirs) {",
-      "  try {",
-      "    Get-ChildItem $d -Filter '*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $cutoff } | ForEach-Object {",
-      "      Add-Content $logFile \"RECENT_TXT: $($_.FullName) | $($_.Length)b | $($_.LastWriteTime)\"",
-      "    }",
-      "  } catch {}",
-      "}",
-      "foreach ($d in $searchDirs) {",
-      "  try {",
-      "    Get-ChildItem $d -Filter 'AMISCE*' -File -ErrorAction SilentlyContinue | ForEach-Object {",
-      "      Add-Content $logFile \"AMISCE_FILE: $($_.FullName) | $($_.Length)b | $($_.LastWriteTime)\"",
-      "    }",
-      "  } catch {}",
-      "}",
-      "# Driver check",
-      `$drvPath = '${path.join(scewinDir, "amifldrv64.sys").replace(/'/g, "''")}'`,
-      "if (Test-Path $drvPath) { Add-Content $logFile 'DRIVER_FILE: EXISTS' }",
-      "else { Add-Content $logFile 'DRIVER_FILE: MISSING' }",
-      "# All files in scewin dir",
-      "Add-Content $logFile '[SCEWIN_DIR_CONTENTS]'",
-      `Get-ChildItem '${scewinDir.replace(/'/g, "''")}' -File -ErrorAction SilentlyContinue | ForEach-Object {`,
-      "  Add-Content $logFile \"  $($_.Name) | $($_.Length)b | $($_.LastWriteTime)\"",
-      "}",
-      "# Loaded drivers check",
-      "try {",
-      "  $amidrvs = Get-WmiObject Win32_SystemDriver | Where-Object { $_.Name -like '*ami*' -or $_.Name -like '*fldrv*' }",
-      "  if ($amidrvs) { $amidrvs | ForEach-Object { Add-Content $logFile \"LOADED_DRV: $($_.Name) State:$($_.State) Path:$($_.PathName)\" } }",
-      "  else { Add-Content $logFile 'NO_AMI_DRIVER_LOADED' }",
-      "} catch { Add-Content $logFile 'DRIVER_QUERY_ERROR' }",
-      "# Try to copy any found export files to accessible location",
-      "$copyDest = '" + exportPath.replace(/'/g, "''") + "'",
-      "foreach ($d in $searchDirs) {",
-      "  foreach ($name in @('fn_export.txt', 'AMISCE.txt')) {",
-      "    $src = Join-Path $d $name",
-      "    if (Test-Path $src) {",
-      "      try {",
-      "        Copy-Item $src $copyDest -Force",
-      "        Add-Content $logFile \"COPIED: $src -> $copyDest\"",
-      "      } catch { Add-Content $logFile \"COPY_FAIL: $src -> $($_.Exception.Message)\" }",
-      "    }",
-      "  }",
-      "}",
-      "Add-Content $logFile '[SEARCH_DONE]'",
-    ].join("\n");
-
-    const encodedSearch2 = Buffer.from(searchPS2, "utf16le").toString("base64");
-    const searchElevatePS = [
-      "try {",
-      "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
-      "  $psi.FileName = 'powershell.exe'",
-      `  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedSearch2}'`,
-      "  $psi.Verb = 'RunAs'",
-      "  $psi.UseShellExecute = $true",
-      "  $psi.WindowStyle = 'Hidden'",
-      "  $proc = [System.Diagnostics.Process]::Start($psi)",
-      "  $proc.WaitForExit(60000)",
-      "  if (!$proc.HasExited) { $proc.Kill() }",
-      "  Write-Output 'SEARCH_DONE'",
-      "} catch { Write-Output \"SEARCH_ERROR:$($_.Exception.Message)\" }",
-    ].join("\n");
-
-    const searchResult = await runPS(searchElevatePS, 75000);
-    addLog(`Search launch: ${(searchResult.output || "").trim()}`);
-
-    // Wait for search to complete
-    for (let i = 0; i < 15; i++) {
-      await new Promise(r => setTimeout(r, 2000));
-      try {
-        const log = fs.readFileSync(logFile, "utf8");
-        if (log.includes("[SEARCH_DONE]")) break;
-      } catch(e) {}
-    }
-
-    // Read the full log
-    try { logContent += fs.readFileSync(logFile, "utf8"); } catch(e) {}
-    this._lastExportLog = logContent;
-
-    // Now check if the elevated search found and copied the file
-    // Also check all the standard paths
-    const allCheckPaths = [
-      exportPath, localExportFull, amisceOutput,
-      path.join("C:\\Windows\\System32", localExport),
-      path.join("C:\\Windows\\System32", "AMISCE.txt"),
+    // ── Step 3: Try direct SCEWIN elevation ──
+    const attempts = [
+      `/o /s nvram.txt`,
+      `/o /s fn_export.txt`,
+      `/o`,
     ];
 
-    for (const checkPath of allCheckPaths) {
-      try {
-        if (fs.existsSync(checkPath)) {
-          const raw = fs.readFileSync(checkPath, "utf8");
-          // DIAGNOSTIC: Log the raw file contents so we can see the actual format
-          addLog(`[RAW_FILE] Path: ${checkPath} | Size: ${raw.length} bytes`);
-          addLog(`[RAW_FIRST_500] ${raw.substring(0, 500).replace(/\r?\n/g, "\\n")}`);
-          addLog(`[RAW_LAST_200] ${raw.substring(Math.max(0, raw.length - 200)).replace(/\r?\n/g, "\\n")}`);
+    for (const args of attempts) {
+      const psScript = [
+        "try {",
+        "  $psi = New-Object System.Diagnostics.ProcessStartInfo",
+        `  $psi.FileName = '${this.scewinPath.replace(/'/g, "''")}'`,
+        `  $psi.Arguments = '${args}'`,
+        `  $psi.WorkingDirectory = '${scewinDir.replace(/'/g, "''")}'`,
+        "  $psi.Verb = 'RunAs'",
+        "  $psi.UseShellExecute = $true",
+        "  $psi.WindowStyle = 'Normal'",
+        "  $proc = [System.Diagnostics.Process]::Start($psi)",
+        "  $proc.WaitForExit(30000)",
+        "  if (!$proc.HasExited) { try { $proc.Kill() } catch {} }",
+        "} catch {}",
+      ].join("\n");
 
-          if (raw.length > 50) {
-            // Try standard AMISCE parse first
-            const settings = this._parseExport(raw);
-            let count = Object.keys(settings).length;
-            addLog(`[PARSE_STANDARD] Found ${count} settings`);
-            if (count > 0) {
-              addLog(`[PARSE_STANDARD_NAMES] ${Object.keys(settings).slice(0, 20).join(", ")}`);
-              this.currentSettings = settings;
-              if (checkPath !== exportPath) try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
-              return { success: true, settings, settingCount: count, method: "direct-elevated-search", rawPreview: raw.substring(0, 300) };
-            }
-            // Try alternate parse
-            const altSettings = this._parseExportAlt(raw);
-            count = Object.keys(altSettings).length;
-            addLog(`[PARSE_ALT] Found ${count} settings`);
-            if (count > 0) {
-              addLog(`[PARSE_ALT_NAMES] ${Object.keys(altSettings).slice(0, 20).join(", ")}`);
-              this.currentSettings = altSettings;
-              if (checkPath !== exportPath) try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
-              return { success: true, settings: altSettings, settingCount: count, method: "direct-elevated-search-alt", rawPreview: raw.substring(0, 300) };
-            }
-            addLog("[PARSE_FAILED] Neither parser found valid settings in this file");
+      await runPS(psScript, 45000);
+      await new Promise(r => setTimeout(r, 3000));
+
+      for (const filePath of existingFiles) {
+        const result = tryParseFile(filePath);
+        if (result) {
+          this.currentSettings = result.settings;
+          if (filePath !== exportPath) {
+            try { fs.copyFileSync(filePath, exportPath); } catch(e) {}
           }
+          return {
+            success: true,
+            settings: result.settings,
+            settingCount: result.count,
+            method: "direct-elevation",
+            source: filePath,
+          };
         }
-      } catch(e) { addLog(`[CHECK_ERROR] ${checkPath}: ${e.message}`); }
+      }
     }
 
-    // Return diagnostic info even on failure
+    // ── Step 4: Everything failed — give clear instructions ──
     return {
       success: false,
-      error: `SceWin diagnostic export. Full log:\n${logContent}`,
-      log: logContent,
+      error: "Could not export BIOS settings. Please run Export.bat manually as Administrator from: " + scewinDir + " — then restart the AI OC. The app will automatically find and parse the export file.",
     };
   }
 
