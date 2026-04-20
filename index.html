@@ -394,6 +394,11 @@
       tunnelError: "",
       tunnelDetectLog: [],
       tunnelWgPath: null,
+      tunnelProfiles: {},
+      tunnelActiveProfile: null,
+      tunnelRegions: [],
+      tunnelSwitching: false,
+      tunnelAddingProfile: false,
       // Route Diagnostic
       routeDiag: {
         phase: "idle", // idle | tracing | done
@@ -604,7 +609,76 @@
         state.tunnelStats = s.stats;
         state.tunnelDetectLog = s.detectLog || [];
         state.tunnelWgPath = s.wireguardPath || null;
+        state.tunnelActiveProfile = s.activeProfile || null;
+        state.tunnelProfiles = s.profiles || {};
       } catch(e) {}
+    }
+
+    async function loadTunnelProfiles() {
+      try {
+        const p = await window.api.tunnelGetProfiles();
+        state.tunnelProfiles = p.profiles || {};
+        state.tunnelActiveProfile = p.activeProfile || null;
+        state.tunnelRegions = p.regions || [];
+      } catch(e) { console.error("Load profiles failed:", e); }
+    }
+
+    async function switchTunnelProfile(profileId) {
+      if (state.tunnelSwitching) return;
+      state.tunnelSwitching = true;
+      state.tunnelError = "";
+      render();
+      try {
+        const res = await window.api.tunnelSwitchProfile(profileId);
+        if (!res.success) {
+          state.tunnelError = res.error || "Failed to switch";
+        } else {
+          state.tunnelActiveProfile = profileId;
+          // Reload the config for display
+          const cfg = await window.api.tunnelLoadProfileConfig(profileId);
+          if (cfg.success) state.tunnelConfig = cfg.config;
+        }
+        await refreshTunnelStatus();
+      } catch(e) {
+        state.tunnelError = e.message;
+      }
+      state.tunnelSwitching = false;
+      render();
+    }
+
+    async function saveTunnelProfile(profileId, name, region) {
+      const textarea = document.getElementById("tunnel-config-input");
+      if (!textarea) return;
+      const config = textarea.value.trim();
+      if (!config) { state.tunnelError = "Paste your WireGuard config first"; render(); return; }
+      const res = await window.api.tunnelSaveProfile(profileId, name, region, config);
+      if (res.success) {
+        state.tunnelHasConfig = true;
+        state.tunnelConfig = config;
+        state.tunnelError = "";
+        state.tunnelAddingProfile = false;
+        await loadTunnelProfiles();
+        await refreshTunnelStatus();
+      } else {
+        state.tunnelError = res.error;
+      }
+      render();
+    }
+
+    async function deleteTunnelProfile(profileId) {
+      const res = await window.api.tunnelDeleteProfile(profileId);
+      if (!res.success) {
+        state.tunnelError = res.error;
+      } else {
+        await loadTunnelProfiles();
+        await refreshTunnelStatus();
+        // Load new active profile config
+        if (state.tunnelActiveProfile) {
+          const cfg = await window.api.tunnelLoadProfileConfig(state.tunnelActiveProfile);
+          if (cfg.success) state.tunnelConfig = cfg.config;
+        }
+      }
+      render();
     }
 
     async function retryWireGuardDetect() {
@@ -655,6 +729,7 @@
     async function loadTunnelConfig() {
       const res = await window.api.tunnelLoadConfig();
       if (res.success) { state.tunnelConfig = res.config; state.tunnelHasConfig = true; }
+      await loadTunnelProfiles();
     }
 
     setInterval(async () => {
@@ -1653,7 +1728,7 @@
           <div>
             <div style="display:flex;align-items:center;gap:8px">
               <span class="glitch-text" data-text="FORTNITE PC OPTIMIZER" style="font-weight:700;font-size:18px;letter-spacing:0.025em;color:#a78bfa">FORTNITE PC OPTIMIZER</span>
-              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.10.1</span>
+              <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#1a0a2e;color:#7c3aed;border:1px solid #2e1065">v3.11.0</span>
               <span class="mono" style="font-size:11px;padding:2px 8px;border-radius:4px;background:#0a1a0a;color:#22c55e;border:1px solid #14532d">REAL PINGS</span>
             </div>
             <div class="mono" style="font-size:11px;color:#333">// measuring actual TCP latency to AWS game servers</div>
@@ -1915,9 +1990,45 @@
         const tLabel = s.tunnelStatus==="connected"?"CONNECTED":s.tunnelStatus==="connecting"?"CONNECTING...":s.tunnelStatus==="error"?"ERROR":"DISCONNECTED";
         const tClass = s.tunnelStatus==="connected"?"on":s.tunnelStatus==="connecting"?"connecting":"off";
 
+        // ── Server Selector ──
+        const profKeys = Object.keys(s.tunnelProfiles || {});
+        const activeProf = s.tunnelActiveProfile && s.tunnelProfiles[s.tunnelActiveProfile] ? s.tunnelProfiles[s.tunnelActiveProfile] : null;
+        if (profKeys.length > 0) {
+          html += `<div style="border-radius:8px;padding:12px;margin-bottom:12px;background:#0d0d1a;border:1px solid #1a1a2e">
+            <div class="mono" style="font-size:11px;color:#555;margin-bottom:8px;letter-spacing:0.1em">// SERVER</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">`;
+          for (const key of profKeys) {
+            const prof = s.tunnelProfiles[key];
+            const isActive = key === s.tunnelActiveProfile;
+            html += `<button onclick="${isActive ? '' : `switchTunnelProfile('${key}')`}" ${s.tunnelSwitching?"disabled":""} style="
+              flex:1;min-width:100px;padding:8px 12px;border-radius:6px;font-size:11px;font-weight:600;
+              cursor:${isActive||s.tunnelSwitching?"default":"pointer"};
+              background:${isActive?"linear-gradient(135deg,#7c3aed,#6d28d9)":"#08080f"};
+              color:${isActive?"#fff":"#555"};
+              border:1px solid ${isActive?"#7c3aed":"#1a1a2e"};
+              transition:all 0.2s;
+              letter-spacing:0.05em;
+            ">
+              <div style="font-size:12px;margin-bottom:2px">${prof.name}</div>
+              <div class="mono" style="font-size:9px;opacity:0.7">${prof.endpoint ? prof.endpoint.split(":")[0] : "no config"}</div>
+            </button>`;
+          }
+          html += `<button onclick="state.tunnelAddingProfile=!state.tunnelAddingProfile;render();" style="
+            padding:8px 12px;border-radius:6px;font-size:16px;font-weight:600;
+            cursor:pointer;background:#08080f;color:#555;border:1px solid #1a1a2e;
+            min-width:36px;transition:all 0.2s;
+          " title="Add Server">+</button>`;
+          html += `</div>`;
+          if (s.tunnelSwitching) {
+            html += `<div class="mono" style="font-size:10px;color:#eab308;margin-top:8px;text-align:center"><span class="animate-spin" style="display:inline-block;margin-right:4px">\u{1F504}</span>Switching server...</div>`;
+          }
+          html += `</div>`;
+        }
+
         html += `<div style="border-radius:8px;padding:16px;margin-bottom:12px;background:#0a0a14;border:1px solid #12121e;text-align:center">
           <div style="font-size:36px;margin-bottom:8px">${s.tunnelStatus==="connected"?"\u{1F6E1}\uFE0F":"\u{1F50C}"}</div>
           <div class="mono" style="font-size:13px;font-weight:700;color:${tColor};margin-bottom:4px">${tLabel}</div>
+          ${activeProf ? `<div class="mono" style="font-size:11px;color:#7c3aed;margin-bottom:2px">${activeProf.name}</div>` : ""}
           ${s.tunnelStats.endpoint ? `<div class="mono" style="font-size:10px;color:#444;margin-bottom:8px">relay: ${s.tunnelStats.endpoint}</div>` : ""}
           <button class="tunnel-toggle ${tClass}" onclick="toggleTunnel()" ${!s.tunnelHasConfig?"disabled":""}
             style="${!s.tunnelHasConfig?"opacity:0.3;cursor:not-allowed":""}"></button>
@@ -2052,9 +2163,50 @@
           html += `<div class="mono" style="font-size:9px;color:#333;margin-bottom:8px">wireguard: ${s.tunnelWgPath}</div>`;
         }
 
-        html += `<div style="margin-bottom:12px">
-          <div class="mono" style="font-size:11px;color:#444;margin-bottom:8px;letter-spacing:0.1em">// WIREGUARD CONFIG</div>
-          <textarea id="tunnel-config-input" class="config-textarea" placeholder="[Interface]
+        // ── Add New Profile Form ──
+        if (s.tunnelAddingProfile || profKeys.length === 0) {
+          html += `<div style="border-radius:8px;padding:12px;margin-bottom:12px;background:#0d0d1a;border:1px solid #7c3aed">
+            <div class="mono" style="font-size:11px;color:#7c3aed;margin-bottom:8px;letter-spacing:0.1em">// ${profKeys.length===0?"SETUP YOUR FIRST SERVER":"ADD NEW SERVER"}</div>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+              <select id="new-profile-region" style="flex:1;padding:6px;border-radius:4px;font-size:11px;background:#08080f;color:#ccc;border:1px solid #1a1a2e;font-family:inherit">
+                <option value="us-south">US South (Dallas)</option>
+                <option value="us-west">US West (Los Angeles)</option>
+                <option value="us-east">US East (New York)</option>
+                <option value="eu-west">EU West (London/Frankfurt)</option>
+                <option value="asia">Asia (Tokyo)</option>
+                <option value="oce">Oceania (Sydney)</option>
+                <option value="custom">Custom</option>
+              </select>
+              <input id="new-profile-name" placeholder="Display name (optional)" style="flex:1;padding:6px;border-radius:4px;font-size:11px;background:#08080f;color:#ccc;border:1px solid #1a1a2e;font-family:inherit" />
+            </div>
+            <textarea id="tunnel-config-input" class="config-textarea" placeholder="[Interface]
+PrivateKey = ...
+Address = 10.66.66.2/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = ...
+Endpoint = YOUR_VPS_IP:51820
+AllowedIPs = ..."></textarea>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button onclick="(function(){
+                const region = document.getElementById('new-profile-region').value;
+                const nameEl = document.getElementById('new-profile-name');
+                const regionNames = {'us-south':'US South','us-west':'US West','us-east':'US East','eu-west':'EU West','asia':'Asia','oce':'Oceania','custom':'Custom'};
+                const name = nameEl.value.trim() || regionNames[region] || region;
+                const id = region + (Object.keys(state.tunnelProfiles||{}).some(k=>k===region) ? '-' + Date.now().toString(36) : '');
+                saveTunnelProfile(id, name, region);
+              })()" style="flex:1;padding:8px;border-radius:6px;font-size:12px;font-weight:600;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;cursor:pointer;letter-spacing:0.05em">
+                SAVE SERVER
+              </button>
+              ${profKeys.length > 0 ? `<button onclick="state.tunnelAddingProfile=false;render();" style="padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;background:#1a1a2e;color:#555;border:1px solid #1a1a2e;cursor:pointer">CANCEL</button>` : ""}
+            </div>
+          </div>`;
+        } else {
+          // Show active profile's config (editable)
+          html += `<div style="margin-bottom:12px">
+            <div class="mono" style="font-size:11px;color:#444;margin-bottom:8px;letter-spacing:0.1em">// WIREGUARD CONFIG ${activeProf ? `(${activeProf.name})` : ""}</div>
+            <textarea id="tunnel-config-input" class="config-textarea" placeholder="[Interface]
 PrivateKey = ...
 Address = 10.66.66.2/32
 DNS = 1.1.1.1
@@ -2063,10 +2215,14 @@ DNS = 1.1.1.1
 PublicKey = ...
 Endpoint = YOUR_VPS_IP:51820
 AllowedIPs = ...">${s.tunnelConfig || ""}</textarea>
-          <button onclick="saveTunnelConfig()" style="width:100%;margin-top:8px;padding:8px;border-radius:6px;font-size:12px;font-weight:600;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;cursor:pointer;letter-spacing:0.05em">
-            SAVE CONFIG
-          </button>
-        </div>`;
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button onclick="saveTunnelConfig()" style="flex:1;padding:8px;border-radius:6px;font-size:12px;font-weight:600;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;cursor:pointer;letter-spacing:0.05em">
+                SAVE CONFIG
+              </button>
+              ${profKeys.length > 1 && s.tunnelActiveProfile && s.tunnelStatus !== "connected" ? `<button onclick="if(confirm('Delete ${activeProf ? activeProf.name : "this profile"}?'))deleteTunnelProfile('${s.tunnelActiveProfile}')" style="padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;background:#1a0505;color:#ef4444;border:1px solid #331111;cursor:pointer">DELETE</button>` : ""}
+            </div>
+          </div>`;
+        }
 
         html += `<div style="border-radius:8px;padding:12px;background:#0a0a14;border:1px solid #12121e">
           <div class="mono" style="font-size:11px;color:#555;margin-bottom:8px;letter-spacing:0.1em">// SETUP GUIDE</div>

@@ -20,6 +20,11 @@ contextBridge.exposeInMainWorld("api", {
   tunnelToggle: () => ipcRenderer.invoke("tunnel-toggle"),
   tunnelStats: () => ipcRenderer.invoke("tunnel-stats"),
   tunnelRetryDetect: () => ipcRenderer.invoke("tunnel-retry-detect"),
+  tunnelGetProfiles: () => ipcRenderer.invoke("tunnel-get-profiles"),
+  tunnelSaveProfile: (id, name, region, config) => ipcRenderer.invoke("tunnel-save-profile", id, name, region, config),
+  tunnelDeleteProfile: (id) => ipcRenderer.invoke("tunnel-delete-profile", id),
+  tunnelSwitchProfile: (id) => ipcRenderer.invoke("tunnel-switch-profile", id),
+  tunnelLoadProfileConfig: (id) => ipcRenderer.invoke("tunnel-load-profile-config", id),
   // ── Benchmark ──
   benchmarkRun: (serverId) => ipcRenderer.invoke("benchmark-run", serverId),
   // ── Updater ──

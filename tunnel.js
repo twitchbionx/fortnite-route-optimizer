@@ -12,6 +12,18 @@ const net = require("net");
 const TUNNEL_NAME = "fn-optimizer";
 const CONFIG_DIR = path.join(os.homedir(), ".fn-optimizer");
 const CONFIG_PATH = path.join(CONFIG_DIR, `${TUNNEL_NAME}.conf`);
+const PROFILES_PATH = path.join(CONFIG_DIR, "tunnel-profiles.json");
+
+// ── Built-in server regions ──
+const BUILTIN_REGIONS = [
+  { id: "us-south", name: "US South", location: "Dallas, TX", flag: "\uD83C\uDDFA\uD83C\uDDF8" },
+  { id: "us-west",  name: "US West",  location: "Los Angeles, CA", flag: "\uD83C\uDDFA\uD83C\uDDF8" },
+  { id: "us-east",  name: "US East",  location: "New York / Virginia", flag: "\uD83C\uDDFA\uD83C\uDDF8" },
+  { id: "eu-west",  name: "EU West",  location: "London / Frankfurt", flag: "\uD83C\uDDEA\uD83C\uDDFA" },
+  { id: "asia",     name: "Asia",     location: "Tokyo / Singapore", flag: "\uD83C\uDDEF\uD83C\uDDF5" },
+  { id: "oce",      name: "Oceania",  location: "Sydney", flag: "\uD83C\uDDE6\uD83C\uDDFA" },
+  { id: "custom",   name: "Custom",   location: "User-defined", flag: "\uD83C\uDF10" },
+];
 
 // WireGuard Windows install paths — check every known location
 const WG_PATHS = [
@@ -44,14 +56,207 @@ class TunnelManager {
     this.wireguardPath = null;
     this.wgCliPath = null;
     this.detectLog = []; // diagnostic log for debugging detection
+    this.profiles = {};       // { profileId: { id, name, region, config, endpoint } }
+    this.activeProfile = null; // currently active profile ID
     this._detectWireGuard();
     this._ensureConfigDir();
+    this._loadProfiles();
   }
 
   _ensureConfigDir() {
     if (!fs.existsSync(CONFIG_DIR)) {
       fs.mkdirSync(CONFIG_DIR, { recursive: true });
     }
+  }
+
+  // ── Profile Management ──────────────────────────────────────────
+
+  _loadProfiles() {
+    try {
+      if (fs.existsSync(PROFILES_PATH)) {
+        const data = JSON.parse(fs.readFileSync(PROFILES_PATH, "utf-8"));
+        this.profiles = data.profiles || {};
+        this.activeProfile = data.activeProfile || null;
+
+        // Load active profile's config
+        if (this.activeProfile && this.profiles[this.activeProfile]) {
+          const prof = this.profiles[this.activeProfile];
+          const confPath = this._profileConfPath(this.activeProfile);
+          if (fs.existsSync(confPath)) {
+            this.config = fs.readFileSync(confPath, "utf-8");
+            const endpointMatch = this.config.match(/Endpoint\s*=\s*(.+)/);
+            if (endpointMatch) this.stats.endpoint = endpointMatch[1].trim();
+          }
+        }
+      }
+
+      // Migration: if old single config exists but no profiles, import it
+      if (Object.keys(this.profiles).length === 0 && fs.existsSync(CONFIG_PATH)) {
+        const oldConfig = fs.readFileSync(CONFIG_PATH, "utf-8");
+        if (oldConfig.includes("[Interface]") && oldConfig.includes("[Peer]")) {
+          const endpointMatch = oldConfig.match(/Endpoint\s*=\s*(.+)/);
+          const endpoint = endpointMatch ? endpointMatch[1].trim() : "";
+          this.profiles["us-south"] = {
+            id: "us-south",
+            name: "US South",
+            region: "us-south",
+            endpoint: endpoint,
+          };
+          this.activeProfile = "us-south";
+          // Copy old config to profile-specific path
+          fs.writeFileSync(this._profileConfPath("us-south"), oldConfig, { mode: 0o600 });
+          this.config = oldConfig;
+          this.stats.endpoint = endpoint;
+          this._saveProfiles();
+          console.log("[Tunnel] Migrated legacy config to us-south profile");
+        }
+      }
+    } catch (e) {
+      console.error("[Tunnel] Failed to load profiles:", e.message);
+    }
+  }
+
+  _saveProfiles() {
+    try {
+      fs.writeFileSync(PROFILES_PATH, JSON.stringify({
+        profiles: this.profiles,
+        activeProfile: this.activeProfile,
+      }, null, 2), { mode: 0o600 });
+    } catch (e) {
+      console.error("[Tunnel] Failed to save profiles:", e.message);
+    }
+  }
+
+  _profileConfPath(profileId) {
+    return path.join(CONFIG_DIR, `fn-optimizer-${profileId}.conf`);
+  }
+
+  getProfiles() {
+    return {
+      profiles: this.profiles,
+      activeProfile: this.activeProfile,
+      regions: BUILTIN_REGIONS,
+    };
+  }
+
+  saveProfile(profileId, name, region, configText) {
+    try {
+      // Validate config
+      if (!configText.includes("[Interface]") || !configText.includes("[Peer]")) {
+        return { success: false, error: "Invalid WireGuard config — needs [Interface] and [Peer] sections" };
+      }
+      if (!configText.includes("PrivateKey")) {
+        return { success: false, error: "Config missing PrivateKey" };
+      }
+      if (!configText.includes("Endpoint")) {
+        return { success: false, error: "Config missing Endpoint" };
+      }
+
+      const endpointMatch = configText.match(/Endpoint\s*=\s*(.+)/);
+      const endpoint = endpointMatch ? endpointMatch[1].trim() : "";
+
+      this.profiles[profileId] = {
+        id: profileId,
+        name: name || profileId,
+        region: region || "custom",
+        endpoint: endpoint,
+      };
+
+      // Write config to profile-specific file
+      fs.writeFileSync(this._profileConfPath(profileId), configText, { mode: 0o600 });
+
+      // If no active profile, make this one active
+      if (!this.activeProfile) {
+        this.activeProfile = profileId;
+        this.config = configText;
+        this.stats.endpoint = endpoint;
+        // Also write to main config path for backward compat
+        fs.writeFileSync(CONFIG_PATH, configText, { mode: 0o600 });
+      }
+
+      this._saveProfiles();
+      return { success: true, profile: this.profiles[profileId] };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  deleteProfile(profileId) {
+    if (!this.profiles[profileId]) {
+      return { success: false, error: "Profile not found" };
+    }
+
+    // Can't delete active profile while connected
+    if (this.activeProfile === profileId && this.status === "connected") {
+      return { success: false, error: "Disconnect tunnel before deleting active profile" };
+    }
+
+    delete this.profiles[profileId];
+
+    // Remove config file
+    const confPath = this._profileConfPath(profileId);
+    if (fs.existsSync(confPath)) {
+      fs.unlinkSync(confPath);
+    }
+
+    // If deleted the active profile, switch to first remaining or null
+    if (this.activeProfile === profileId) {
+      const remaining = Object.keys(this.profiles);
+      this.activeProfile = remaining.length > 0 ? remaining[0] : null;
+      if (this.activeProfile) {
+        const confPath = this._profileConfPath(this.activeProfile);
+        if (fs.existsSync(confPath)) {
+          this.config = fs.readFileSync(confPath, "utf-8");
+          fs.writeFileSync(CONFIG_PATH, this.config, { mode: 0o600 });
+        }
+      } else {
+        this.config = null;
+      }
+    }
+
+    this._saveProfiles();
+    return { success: true };
+  }
+
+  async switchProfile(profileId) {
+    if (!this.profiles[profileId]) {
+      return { success: false, error: "Profile not found" };
+    }
+    if (this.activeProfile === profileId) {
+      return { success: true, message: "Already on this profile" };
+    }
+
+    const wasConnected = this.status === "connected";
+
+    // Disconnect if currently connected
+    if (wasConnected) {
+      console.log(`[Tunnel] Disconnecting from ${this.activeProfile} before switching...`);
+      await this.disconnect();
+    }
+
+    // Switch to new profile
+    this.activeProfile = profileId;
+    const confPath = this._profileConfPath(profileId);
+    if (fs.existsSync(confPath)) {
+      this.config = fs.readFileSync(confPath, "utf-8");
+      const endpointMatch = this.config.match(/Endpoint\s*=\s*(.+)/);
+      if (endpointMatch) this.stats.endpoint = endpointMatch[1].trim();
+      // Write to main config path (WireGuard uses this)
+      fs.writeFileSync(CONFIG_PATH, this.config, { mode: 0o600 });
+    } else {
+      return { success: false, error: "Profile config file not found" };
+    }
+
+    this._saveProfiles();
+
+    // Reconnect if was connected
+    if (wasConnected) {
+      console.log(`[Tunnel] Reconnecting with ${profileId}...`);
+      const res = await this.connect();
+      return { success: res.success, switched: true, reconnected: res.success, error: res.error };
+    }
+
+    return { success: true, switched: true };
   }
 
   _detectWireGuard() {
@@ -222,6 +427,8 @@ class TunnelManager {
       stats: this.stats,
       wireguardPath: this.wireguardPath,
       detectLog: this.detectLog,
+      activeProfile: this.activeProfile,
+      profiles: this.profiles,
     };
   }
 
@@ -233,7 +440,7 @@ class TunnelManager {
     return this.getStatus();
   }
 
-  // Save WireGuard config from user input
+  // Save WireGuard config from user input (also updates active profile)
   saveConfig(configText) {
     try {
       // Validate it looks like a WireGuard config
@@ -256,22 +463,55 @@ class TunnelManager {
         this.stats.endpoint = endpointMatch[1].trim();
       }
 
+      // Also update active profile's config file
+      if (this.activeProfile && this.profiles[this.activeProfile]) {
+        fs.writeFileSync(this._profileConfPath(this.activeProfile), configText, { mode: 0o600 });
+        this.profiles[this.activeProfile].endpoint = this.stats.endpoint || "";
+        this._saveProfiles();
+      }
+
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message };
     }
   }
 
-  // Load saved config
+  // Load saved config (loads active profile's config)
   loadConfig() {
     try {
+      // Try active profile first
+      if (this.activeProfile) {
+        const confPath = this._profileConfPath(this.activeProfile);
+        if (fs.existsSync(confPath)) {
+          this.config = fs.readFileSync(confPath, "utf-8");
+          const endpointMatch = this.config.match(/Endpoint\s*=\s*(.+)/);
+          if (endpointMatch) this.stats.endpoint = endpointMatch[1].trim();
+          // Sync to main config path
+          fs.writeFileSync(CONFIG_PATH, this.config, { mode: 0o600 });
+          return { success: true, config: this.config, activeProfile: this.activeProfile };
+        }
+      }
+      // Fall back to legacy single config
       if (fs.existsSync(CONFIG_PATH)) {
         this.config = fs.readFileSync(CONFIG_PATH, "utf-8");
         const endpointMatch = this.config.match(/Endpoint\s*=\s*(.+)/);
         if (endpointMatch) this.stats.endpoint = endpointMatch[1].trim();
-        return { success: true, config: this.config };
+        return { success: true, config: this.config, activeProfile: this.activeProfile };
       }
       return { success: false, error: "No saved config found" };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  // Load a specific profile's config (for viewing in UI)
+  loadProfileConfig(profileId) {
+    try {
+      const confPath = this._profileConfPath(profileId);
+      if (fs.existsSync(confPath)) {
+        return { success: true, config: fs.readFileSync(confPath, "utf-8") };
+      }
+      return { success: false, error: "Config not found for this profile" };
     } catch (e) {
       return { success: false, error: e.message };
     }
@@ -438,18 +678,4 @@ class TunnelManager {
   _tcpPing(host, port = 443, timeout = 5000) {
     return new Promise((resolve) => {
       const start = process.hrtime.bigint();
-      const socket = new net.Socket();
-      socket.setTimeout(timeout);
-      socket.on("connect", () => {
-        const end = process.hrtime.bigint();
-        socket.destroy();
-        resolve(Math.round(Number(end - start) / 1_000_000));
-      });
-      socket.on("timeout", () => { socket.destroy(); resolve(-1); });
-      socket.on("error", () => { socket.destroy(); resolve(-1); });
-      socket.connect(port, host);
-    });
-  }
-}
-
-module.exports = TunnelManager;
+      const socket = new net.S

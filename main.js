@@ -348,6 +348,27 @@ ipcMain.handle("tunnel-retry-detect", () => {
   return tunnel.retryDetect();
 });
 
+// ── Tunnel Profile Management ──
+ipcMain.handle("tunnel-get-profiles", () => {
+  return tunnel.getProfiles();
+});
+
+ipcMain.handle("tunnel-save-profile", (_event, profileId, name, region, configText) => {
+  return tunnel.saveProfile(profileId, name, region, configText);
+});
+
+ipcMain.handle("tunnel-delete-profile", (_event, profileId) => {
+  return tunnel.deleteProfile(profileId);
+});
+
+ipcMain.handle("tunnel-switch-profile", async (_event, profileId) => {
+  return await tunnel.switchProfile(profileId);
+});
+
+ipcMain.handle("tunnel-load-profile-config", (_event, profileId) => {
+  return tunnel.loadProfileConfig(profileId);
+});
+
 // ── Benchmark IPC Handler ─────────────────────────────────────────
 // Runs 10 pings to a server and returns detailed stats
 // Used for before/after tunnel comparison
