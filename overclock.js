@@ -973,24 +973,62 @@ class SceWinManager {
     };
 
     const cpuSettings = {
-      cpuRatio: fuzzyGet(["ratio", "multiplier", "core ratio", "all core", "cpu ratio", "frequency ratio"],
-        "CPU Ratio", "CPU Core Ratio", "Core Ratio Limit"),
-      cpuVoltage: fuzzyGet(["vcore", "cpu voltage", "core voltage", "cpu v", "vid"],
-        "CPU Core Voltage", "CPU Vcore", "Vcore Override"),
-      cpuVoltageMode: fuzzyGet(["voltage mode", "vcore mode"],
-        "CPU Core Voltage Mode", "Vcore Mode"),
-      powerLimit1: fuzzyGet(["long duration power limit", "pl1", "package power limit 1", "power limit 1", "long duration", "tdp"],
-        "Long Duration Power Limit", "PL1", "Package Power Limit 1"),
-      powerLimit2: fuzzyGet(["short duration power limit", "pl2", "package power limit 2", "power limit 2", "short duration"],
-        "Short Duration Power Limit", "PL2", "Package Power Limit 2"),
-      tccOffset: fuzzyGet(["tcc", "activation offset"],
-        "TCC Activation Offset"),
-      ringRatio: fuzzyGet(["ring ratio", "cache ratio", "uncore ratio", "ring", "cache", "uncore"],
-        "Ring Ratio", "Cache Ratio", "Uncore Ratio"),
-      iccMax: fuzzyGet(["icc max", "ia ac load line", "icc"],
-        "ICC Max", "IA AC Load Line"),
-      avxOffset: fuzzyGet(["avx offset", "avx2 ratio offset", "avx"],
-        "AVX Offset", "AVX2 Ratio Offset"),
+      cpuRatio: fuzzyGet([
+        "all-core ratio limit", "all core ratio limit", "performance core ratio",
+        "adjust cpu ratio", "per core ratio limit", "cpu clock ratio",
+        "all core ratio", "cpu core ratio", "core ratio limit",
+        "p-core ratio", "pcore ratio", "processor core ratio",
+        "cpu ratio", "core ratio", "frequency ratio",
+        "ratio limit", "multiplier", "cpu multi", "oc ratio", "max ratio", "ratio",
+      ], "CPU Ratio", "CPU Core Ratio", "Core Ratio Limit", "All Core Ratio Limit"),
+      cpuVoltage: fuzzyGet([
+        "cpu core/cache voltage", "cpu core voltage override",
+        "vcore override voltage", "cpu vcore override", "dynamic vcore",
+        "core voltage override", "cpu core voltage", "cpu cache voltage",
+        "vcore override", "vcore voltage", "ia voltage offset",
+        "cpu vcore", "core voltage", "override voltage", "adaptive voltage",
+        "vcore", "cpu voltage", "cpu v", "vid override", "vid",
+      ], "CPU Core Voltage", "CPU Vcore", "Vcore Override", "CPU Core/Cache Voltage"),
+      cpuVoltageMode: fuzzyGet([
+        "cpu core/cache voltage mode", "svid behavior",
+        "cpu core voltage mode", "cpu vcore mode",
+        "voltage mode", "vcore mode", "svid support",
+      ], "CPU Core Voltage Mode", "Vcore Mode", "SVID Behavior"),
+      powerLimit1: fuzzyGet([
+        "long duration package power limit", "long duration power limit",
+        "package power limit1", "package power limit 1",
+        "power limit 1 value", "cpu power limit value",
+        "processor base power", "base power limit",
+        "power limit 1", "long duration", "pl1 (w)", "pl1(w)", "pl1",
+        "tdp limit", "tdp power",
+      ], "Long Duration Power Limit", "PL1", "Package Power Limit 1"),
+      powerLimit2: fuzzyGet([
+        "short duration package power limit", "short duration power limit",
+        "package power limit2", "package power limit 2",
+        "power limit 2 value", "maximum turbo power",
+        "max turbo power", "power limit 2", "short duration",
+        "pl2 (w)", "pl2(w)", "pl2", "turbo power limit",
+      ], "Short Duration Power Limit", "PL2", "Package Power Limit 2"),
+      tccOffset: fuzzyGet([
+        "tcc activation offset", "cpu tcc offset", "tcc offset", "tcc",
+      ], "TCC Activation Offset"),
+      ringRatio: fuzzyGet([
+        "min cpu cache ratio", "max cpu cache ratio", "cpu cache ratio",
+        "adjust ring ratio", "ring multiplier", "cpu uncore ratio",
+        "ring ratio", "cache ratio", "uncore ratio", "uncore frequency",
+        "ring", "cache", "uncore",
+      ], "Ring Ratio", "Cache Ratio", "Uncore Ratio"),
+      iccMax: fuzzyGet([
+        "iccmax unlimited", "icc max override", "ia ac/dc loadline",
+        "ia ac loadline", "cpu vr current limit", "current limit",
+        "ia ac load line", "icc max", "iccmax", "icc",
+      ], "ICC Max", "IA AC Load Line"),
+      avxOffset: fuzzyGet([
+        "avx instruction core ratio", "avx2 ratio offset",
+        "avx ratio offset", "avx frequency trim",
+        "avx 512 offset", "avx-512 offset", "avx512 ratio offset",
+        "avx offset", "avx2 offset", "avx negative offset",
+      ], "AVX Offset", "AVX2 Ratio Offset"),
     };
 
     return { success: true, settings: cpuSettings };
@@ -1024,22 +1062,42 @@ class SceWinManager {
     };
 
     const memSettings = {
-      memorySpeed: fuzzyGet(["memory frequency", "dram frequency", "memory speed", "mem freq"],
-        "Memory Frequency", "DRAM Frequency", "Memory Speed"),
-      casLatency: fuzzyGet(["cas latency", "tcl", "cas#"],
-        "CAS Latency", "tCL", "CAS# Latency"),
-      tRCD: fuzzyGet(["trcd", "ras to cas"],
-        "tRCD", "RAS to CAS Delay", "RAS# to CAS# Delay"),
-      tRP: fuzzyGet(["trp", "row precharge", "ras# precharge"],
-        "tRP", "Row Precharge Time", "RAS# Precharge"),
-      tRAS: fuzzyGet(["tras", "ras active", "active to precharge"],
-        "tRAS", "RAS Active Time", "Active to Precharge Delay"),
-      xmpProfile: fuzzyGet(["xmp", "memory profile", "expo", "docp"],
-        "XMP Profile", "Extreme Memory Profile", "XMP"),
-      memoryVoltage: fuzzyGet(["dram voltage", "memory voltage", "dram v"],
-        "DRAM Voltage", "Memory Voltage"),
-      commandRate: fuzzyGet(["command rate", "cmd rate"],
-        "Command Rate", "CR", "Cmd Rate"),
+      memorySpeed: fuzzyGet([
+        "memory frequency", "dram frequency", "memory speed", "mem freq",
+        "system memory multiplier", "memory multiplier", "dram speed",
+        "memory clock", "dram clock", "memory ratio",
+      ], "Memory Frequency", "DRAM Frequency", "Memory Speed", "System Memory Multiplier"),
+      casLatency: fuzzyGet([
+        "cas latency", "cas# latency", "tcl", "cl value",
+        "dram cas# latency", "cas",
+      ], "CAS Latency", "tCL", "CAS# Latency", "DRAM CAS# Latency"),
+      tRCD: fuzzyGet([
+        "trcd", "ras to cas", "ras# to cas#", "ras to cas delay",
+        "dram ras# to cas# delay", "row address to column address",
+      ], "tRCD", "RAS to CAS Delay", "RAS# to CAS# Delay", "DRAM RAS# to CAS# Delay"),
+      tRP: fuzzyGet([
+        "trp", "row precharge", "ras# precharge", "ras precharge",
+        "dram ras# pre time",
+      ], "tRP", "Row Precharge Time", "RAS# Precharge", "DRAM RAS# PRE Time"),
+      tRAS: fuzzyGet([
+        "tras", "ras active", "active to precharge", "ras# act time",
+        "dram ras# act time",
+      ], "tRAS", "RAS Active Time", "Active to Precharge Delay", "DRAM RAS# ACT Time"),
+      xmpProfile: fuzzyGet([
+        "ai overclock tuner", "a-xmp", "extreme memory profile",
+        "load xmp setting", "memory profile", "xmp profile",
+        "system memory multiplier", "d.o.c.p", "docp",
+        "expo profile", "expo", "xmp", "dram profile",
+      ], "XMP Profile", "Extreme Memory Profile", "XMP", "Ai Overclock Tuner", "A-XMP"),
+      memoryVoltage: fuzzyGet([
+        "dram voltage", "memory voltage", "dram v", "dimm voltage",
+        "dram core voltage", "ddr voltage", "memory vddq",
+        "vddq voltage", "sa voltage", "system agent voltage",
+      ], "DRAM Voltage", "Memory Voltage", "DRAM Core Voltage"),
+      commandRate: fuzzyGet([
+        "command rate", "cmd rate", "command rate mode",
+        "dram command rate", "cr mode",
+      ], "Command Rate", "CR", "Cmd Rate", "DRAM Command Rate"),
     };
 
     return { success: true, settings: memSettings };
@@ -1973,10 +2031,18 @@ class AIOverclockEngine {
     this.biosMap = {
       cpuRatio: null,
       cpuVoltage: null,
+      cpuVoltageMode: null,
       xmpProfile: null,
       pl1: null,
       pl2: null,
       ringRatio: null,
+      iccMax: null,
+      avxOffset: null,
+      tccOffset: null,
+      cStates: null,
+      speedStep: null,
+      turboBoost: null,
+      thermalVelocityBoost: null,
     };
 
     if (!this.scewin.available) {
@@ -2000,7 +2066,24 @@ class AIOverclockEngine {
     const allNames = Object.keys(exported.settings);
     this._log("analyzing", "bios-discovery", `Exported ${allNames.length} BIOS settings — running fuzzy match`);
 
-    // Fuzzy keyword matching helper: returns the first setting name that matches any keyword
+    // Log ALL setting names so we can see exactly what the BIOS exports
+    // Group them in chunks of ~10 for readability
+    for (let i = 0; i < allNames.length; i += 10) {
+      const chunk = allNames.slice(i, i + 10).join(" | ");
+      this._log("analyzing", "bios-settings-dump", `Settings [${i}-${Math.min(i+9, allNames.length-1)}]: ${chunk}`);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // COMPREHENSIVE FUZZY MATCHING
+    // Every motherboard manufacturer uses different names for the same
+    // BIOS settings. This covers: ASUS, MSI, Gigabyte, ASRock, EVGA,
+    // Biostar, SuperMicro, Intel reference BIOS, and AMI Aptio defaults.
+    //
+    // The fuzzyFind helper returns the first setting name that contains
+    // any of the keywords (case-insensitive). Keywords are ordered from
+    // most specific to least specific to avoid false positives.
+    // ═══════════════════════════════════════════════════════════════════
+
     const fuzzyFind = (keywords) => {
       for (const name of allNames) {
         const lower = name.toLowerCase();
@@ -2012,38 +2095,203 @@ class AIOverclockEngine {
     };
 
     // CPU ratio / multiplier
+    // ASUS: "CPU Core Ratio", "All-Core Ratio Limit", "Performance Core Ratio"
+    // MSI: "Adjust CPU Ratio", "CPU Ratio", "Ratio Limit", "Per Core Ratio"
+    // Gigabyte: "CPU Clock Ratio", "CPU Ratio", "Host Clock Ratio"
+    // ASRock: "CPU Ratio", "All Core", "Multi"
+    // Intel ref: "Processor Core Ratio", "Active Processor Cores"
+    // EVGA: "CPU Core Ratio", "All Core Multiplier"
     this.biosMap.cpuRatio = fuzzyFind([
-      "all core ratio", "cpu ratio", "core ratio limit", "cpu core ratio",
-      "frequency ratio", "multiplier", "ratio",
+      "all-core ratio limit", "all core ratio limit", "performance core ratio",
+      "adjust cpu ratio", "per core ratio limit",
+      "cpu clock ratio", "host clock ratio",
+      "all core ratio", "cpu core ratio", "core ratio limit",
+      "p-core ratio", "pcore ratio", "e-core ratio", "ecore ratio",
+      "processor core ratio", "active core ratio",
+      "cpu ratio", "core ratio", "frequency ratio",
+      "ratio limit", "multiplier", "cpu multi",
+      "oc ratio", "overclock ratio",
+      "flex ratio", "non-turbo ratio",
+      "max ratio", "ratio",
     ]);
 
-    // CPU voltage
+    // CPU voltage / Vcore
+    // ASUS: "CPU Core/Cache Voltage", "CPU Core Voltage Override", "CPU SVID Support"
+    // MSI: "CPU Core Voltage", "CPU Vcore", "Vcore Override Voltage"
+    // Gigabyte: "CPU Vcore", "Dynamic Vcore(DVID)", "CPU Vcore Override"
+    // ASRock: "CPU Core/Cache Voltage", "Vcore Override Voltage", "CPU Voltage"
+    // Intel ref: "Core Voltage Override", "VR Configuration"
+    // EVGA: "CPU Vcore Override", "Vcore", "VCore Voltage"
     this.biosMap.cpuVoltage = fuzzyFind([
-      "vcore override", "cpu vcore", "cpu core voltage", "core voltage",
-      "vcore", "cpu voltage", "cpu v", "vid",
+      "cpu core/cache voltage", "cpu core voltage override",
+      "vcore override voltage", "cpu vcore override",
+      "dynamic vcore", "dvid",
+      "core voltage override", "vr voltage override",
+      "cpu core voltage", "cpu cache voltage",
+      "vcore override", "vcore voltage",
+      "ia voltage offset", "ia voltage override",
+      "cpu vcore", "core voltage",
+      "override voltage", "adaptive voltage",
+      "voltage offset", "voltage override",
+      "vcore", "cpu voltage", "cpu v",
+      "vid override", "vid",
     ]);
 
-    // XMP / memory profile
+    // CPU voltage mode (adaptive vs manual vs offset)
+    // ASUS: "CPU Core/Cache Voltage Mode", "SVID Behavior"
+    // MSI: "CPU Core Voltage Mode", "Voltage Mode"
+    // Gigabyte: "CPU Vcore Mode"
+    // ASRock: "Voltage Mode", "CPU Voltage Mode"
+    this.biosMap.cpuVoltageMode = fuzzyFind([
+      "cpu core/cache voltage mode", "svid behavior",
+      "cpu core voltage mode", "cpu vcore mode",
+      "voltage mode", "vcore mode",
+      "svid support", "svid control",
+    ]);
+
+    // XMP / EXPO / DOCP memory profile
+    // ASUS: "Ai Overclock Tuner", "XMP", "DOCP"
+    // MSI: "A-XMP", "Extreme Memory Profile", "XMP Profile"
+    // Gigabyte: "Extreme Memory Profile(X.M.P.)", "XMP", "System Memory Multiplier"
+    // ASRock: "DRAM Configuration > XMP", "Load XMP Setting"
+    // AMD: "EXPO", "DOCP", "D.O.C.P."
     this.biosMap.xmpProfile = fuzzyFind([
-      "xmp profile", "extreme memory profile", "xmp", "memory profile",
-      "expo", "docp",
+      "ai overclock tuner", "a-xmp",
+      "extreme memory profile", "load xmp setting",
+      "memory profile", "xmp profile", "xmp setting",
+      "system memory multiplier",
+      "d.o.c.p", "docp",
+      "expo profile", "expo",
+      "xmp", "dram profile",
     ]);
 
-    // Power limit 1 (long duration)
+    // Power Limit 1 (long duration / PBP / TDP)
+    // ASUS: "Long Duration Package Power Limit", "PL1", "Package Power Limit"
+    // MSI: "Long Duration Power Limit (W)", "PL1 (W)", "CPU Power Limit Value"
+    // Gigabyte: "Package Power Limit1 - TDP (Watts)", "PL1"
+    // ASRock: "Long Duration Power Limit", "PBP", "Base Power Limit"
+    // Intel ref: "Package Power Limit 1", "Power Limit 1 Value"
     this.biosMap.pl1 = fuzzyFind([
-      "long duration power limit", "pl1", "package power limit 1",
-      "power limit 1", "long duration", "tdp",
+      "long duration package power limit", "long duration power limit",
+      "package power limit1", "package power limit 1",
+      "power limit 1 value", "cpu power limit value",
+      "processor base power", "base power limit",
+      "power limit 1", "long duration",
+      "pbp power", "pl1 power",
+      "pl1 (w)", "pl1(w)", "pl1",
+      "tdp limit", "tdp power",
     ]);
 
-    // Power limit 2 (short duration)
+    // Power Limit 2 (short duration / max turbo power)
+    // ASUS: "Short Duration Package Power Limit", "PL2"
+    // MSI: "Short Duration Power Limit (W)", "PL2 (W)"
+    // Gigabyte: "Package Power Limit2 (Watts)", "PL2"
+    // ASRock: "Short Duration Power Limit", "Maximum Turbo Power"
+    // Intel ref: "Package Power Limit 2", "Power Limit 2 Value"
     this.biosMap.pl2 = fuzzyFind([
-      "short duration power limit", "pl2", "package power limit 2",
-      "power limit 2", "short duration",
+      "short duration package power limit", "short duration power limit",
+      "package power limit2", "package power limit 2",
+      "power limit 2 value", "maximum turbo power",
+      "max turbo power", "power limit 2", "short duration",
+      "pl2 (w)", "pl2(w)", "pl2",
+      "turbo power limit",
     ]);
 
-    // Ring / cache / uncore ratio
+    // Ring / Cache / Uncore ratio
+    // ASUS: "Min/Max CPU Cache Ratio", "Ring Ratio", "Uncore Ratio"
+    // MSI: "Ring Ratio", "CPU Cache Ratio", "Adjust Ring Ratio"
+    // Gigabyte: "Uncore Ratio", "Ring Multiplier", "CPU Uncore Ratio"
+    // ASRock: "Cache Ratio", "Ring Ratio", "Min Ring Ratio"
+    // Intel ref: "Uncore Frequency"
     this.biosMap.ringRatio = fuzzyFind([
-      "ring ratio", "cache ratio", "uncore ratio", "ring", "cache", "uncore",
+      "min cpu cache ratio", "max cpu cache ratio", "cpu cache ratio",
+      "adjust ring ratio", "ring multiplier",
+      "cpu uncore ratio", "uncore frequency",
+      "ring ratio", "cache ratio", "uncore ratio",
+      "ring down bin", "min ring ratio", "max ring ratio",
+      "ring", "cache", "uncore",
+    ]);
+
+    // ICC Max (current limit)
+    // ASUS: "IccMax", "IA AC Load Line", "IA DC Load Line"
+    // MSI: "IA AC/DC Loadline", "ICC Max Override"
+    // Gigabyte: "IA AC Loadline", "CPU VR Current Limit"
+    // ASRock: "IccMax", "Long Duration Maintained"
+    // Intel ref: "ICC Max Unlimited", "Current Limit"
+    this.biosMap.iccMax = fuzzyFind([
+      "iccmax unlimited", "icc max override",
+      "ia ac/dc loadline", "ia ac loadline", "ia dc loadline",
+      "cpu vr current limit", "current limit",
+      "ia ac load line", "ia dc load line",
+      "icc max", "iccmax", "icc",
+    ]);
+
+    // AVX Offset (reduces ratio during AVX workloads)
+    // ASUS: "AVX2 Ratio Offset", "AVX Instruction Core Ratio Negative Offset"
+    // MSI: "AVX Ratio Offset", "AVX2 Offset"
+    // Gigabyte: "AVX Offset", "AVX Frequency Trim"
+    // ASRock: "AVX2 Ratio Offset", "AVX 512 Offset"
+    this.biosMap.avxOffset = fuzzyFind([
+      "avx instruction core ratio", "avx2 ratio offset",
+      "avx ratio offset", "avx frequency trim",
+      "avx 512 offset", "avx-512 offset",
+      "avx512 ratio offset",
+      "avx offset", "avx2 offset",
+      "avx negative offset",
+    ]);
+
+    // TCC Activation Offset (thermal throttle temperature offset)
+    // ASUS: "TCC Activation Offset"
+    // MSI: "TCC Activation Offset", "CPU TCC Offset"
+    // Gigabyte: "TCC Offset"
+    // ASRock: "TCC Activation Offset"
+    this.biosMap.tccOffset = fuzzyFind([
+      "tcc activation offset", "cpu tcc offset",
+      "tcc offset", "tcc",
+    ]);
+
+    // C-States (CPU power saving states)
+    // ASUS: "CPU - C6 Report", "C-State", "Intel C-State"
+    // MSI: "Intel C-State", "C1E Support", "Package C State"
+    // Gigabyte: "C-States Support", "Enhanced Halt State (C1E)"
+    // ASRock: "CPU C States Support", "C State Support"
+    this.biosMap.cStates = fuzzyFind([
+      "cpu c states support", "cpu c-state", "intel c-state",
+      "c-states support", "c state support",
+      "package c state", "c6 report", "c1e support",
+      "c-state", "c state",
+    ]);
+
+    // SpeedStep / EIST
+    // ASUS: "Intel SpeedStep Technology", "EIST"
+    // MSI: "Intel SpeedStep", "EIST"
+    // Gigabyte: "Enhanced Intel SpeedStep", "EIST"
+    // ASRock: "Intel SpeedStep Technology", "Speed Step"
+    this.biosMap.speedStep = fuzzyFind([
+      "intel speedstep technology", "enhanced intel speedstep",
+      "intel speedstep", "intel speed step",
+      "speedstep", "speed step", "eist",
+    ]);
+
+    // Turbo Boost
+    // ASUS: "Intel Turbo Boost Technology", "Turbo Mode"
+    // MSI: "Intel Turbo Boost", "Turbo Boost"
+    // Gigabyte: "Intel(R) Turbo Boost Technology", "Turbo Boost"
+    // ASRock: "Intel Turbo Boost Technology", "Turbo Mode"
+    this.biosMap.turboBoost = fuzzyFind([
+      "intel turbo boost technology", "intel(r) turbo boost",
+      "intel turbo boost", "turbo boost technology",
+      "turbo boost", "turbo mode",
+      "multi core enhancement", "mce",
+    ]);
+
+    // Thermal Velocity Boost (Intel 14th gen feature)
+    // ASUS: "Intel Thermal Velocity Boost", "TVB"
+    // MSI: "Thermal Velocity Boost"
+    // Gigabyte: "TVB", "Thermal Velocity Boost"
+    this.biosMap.thermalVelocityBoost = fuzzyFind([
+      "intel thermal velocity boost", "thermal velocity boost",
+      "tvb voltage optimizations", "tvb",
     ]);
 
     const found = Object.entries(this.biosMap)
