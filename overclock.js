@@ -753,51 +753,196 @@ class SceWinManager {
   }
 
   _parseExport(raw) {
-    // SceWin export is a text file with lines like:
-    //   Setup Question = <name>
-    //   Token = <hex>     Value = <hex>
+    // ═══════════════════════════════════════════════════════════════════
+    // AMISCE Script Format Parser (SCEWIN /o /s output)
+    //
+    // The actual format from SCEWIN_64 /o /s is a script file:
+    //
+    //   Setup Question = BCLK Output Source
+    //   Help String = <description text>
+    //   Token =14 // Do NOT change this line
+    //   Offset =CBS
+    //   Width =01
+    //   BIOS Default =[00]CPU BCLK
+    //   Options =*[00]CPU BCLK   // asterisk marks current value
+    //            [02]Buffer
+    //
+    // Key fields per setting:
+    //   - "Setup Question = <name>" — the setting name
+    //   - "Token =<decimal>" — the token number (used for writes)
+    //   - "Options =*[xx]<label>" — current value (marked with *)
+    //   - "BIOS Default =[xx]<label>" — factory default
+    //   - "Offset =<hex|string>" — NVRAM offset
+    //   - "Width =<number>" — data width in bytes
+    //
+    // For numeric settings (ratios, voltages, etc.) the format is:
+    //   Setup Question = CPU Base Clock 100.00MHz
+    //   Token =14
+    //   Offset =01
+    //   Width =02
+    //   BIOS Default =[2710]
+    //   Value =2710    // current value in hex (no options list)
+    // ═══════════════════════════════════════════════════════════════════
     const settings = {};
     const lines = raw.split("\n");
-    let currentName = null;
+    let current = null; // current setting being parsed
 
-    for (const line of lines) {
-      const nameMatch = line.match(/Setup Question\s*=\s*(.+)/i);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      // "Setup Question = <name>" starts a new setting block
+      const nameMatch = trimmed.match(/^Setup Question\s*=\s*(.+)/i);
       if (nameMatch) {
-        currentName = nameMatch[1].trim();
+        // Save previous setting if it had enough info
+        if (current && current.name && (current.value !== null || current.token !== null)) {
+          settings[current.name] = {
+            token: current.token || "0",
+            value: current.value !== null ? current.value : current.biosDefault || "0x0",
+            currentLabel: current.currentLabel || "",
+            biosDefault: current.biosDefault || "",
+            defaultLabel: current.defaultLabel || "",
+            offset: current.offset || "",
+            width: current.width || "",
+            options: current.options || [],
+            helpString: current.helpString || "",
+          };
+        }
+        current = {
+          name: nameMatch[1].trim(),
+          token: null,
+          value: null,
+          currentLabel: "",
+          biosDefault: "",
+          defaultLabel: "",
+          offset: "",
+          width: "",
+          options: [],
+          helpString: "",
+        };
         continue;
       }
-      const valueMatch = line.match(/Token\s*=\s*(0x[0-9A-Fa-f]+)\s+.*?Value\s*=\s*(0x[0-9A-Fa-f]+)/i);
-      if (valueMatch && currentName) {
-        settings[currentName] = {
-          token: valueMatch[1],
-          value: valueMatch[2],
-          raw: line.trim(),
-        };
-        currentName = null;
+
+      if (!current) continue;
+
+      // "Token =<number>" — token ID (decimal or hex)
+      const tokenMatch = trimmed.match(/^Token\s*=\s*([0-9A-Fa-fx]+)/i);
+      if (tokenMatch) {
+        const t = tokenMatch[1];
+        current.token = t.startsWith("0x") ? t : "0x" + parseInt(t, 10).toString(16);
+        continue;
       }
+
+      // "Value =<hex>" — direct numeric value (for numeric settings)
+      const valueMatch = trimmed.match(/^Value\s*=\s*([0-9A-Fa-f]+)/i);
+      if (valueMatch && !trimmed.startsWith("//")) {
+        current.value = "0x" + valueMatch[1];
+        continue;
+      }
+
+      // "BIOS Default =[xx]<label>" or "BIOS Default =[xx]"
+      const defaultMatch = trimmed.match(/^BIOS Default\s*=\s*\[([0-9A-Fa-f]+)\]\s*(.*)/i);
+      if (defaultMatch) {
+        current.biosDefault = "0x" + defaultMatch[1];
+        current.defaultLabel = defaultMatch[2] ? defaultMatch[2].trim() : "";
+        continue;
+      }
+
+      // "Options =*[xx]<label>" or "Options =[xx]<label>" — option list
+      // The asterisk (*) marks the currently selected option
+      const optionsMatch = trimmed.match(/^Options\s*=\s*(\*?)\[([0-9A-Fa-f]+)\]\s*(.*)/i);
+      if (optionsMatch) {
+        const isSelected = optionsMatch[1] === "*";
+        const val = "0x" + optionsMatch[2];
+        const label = (optionsMatch[3] || "").split("//")[0].trim();
+        current.options.push({ value: val, label, selected: isSelected });
+        if (isSelected) {
+          current.value = val;
+          current.currentLabel = label;
+        }
+        continue;
+      }
+
+      // Continuation option lines: "  *[xx]<label>" or "  [xx]<label>"
+      const contOptionMatch = trimmed.match(/^(\*?)\[([0-9A-Fa-f]+)\]\s*(.*)/);
+      if (contOptionMatch) {
+        const isSelected = contOptionMatch[1] === "*";
+        const val = "0x" + contOptionMatch[2];
+        const label = (contOptionMatch[3] || "").split("//")[0].trim();
+        current.options.push({ value: val, label, selected: isSelected });
+        if (isSelected) {
+          current.value = val;
+          current.currentLabel = label;
+        }
+        continue;
+      }
+
+      // "Offset =<hex|string>"
+      const offsetMatch = trimmed.match(/^Offset\s*=\s*(.+)/i);
+      if (offsetMatch) {
+        current.offset = offsetMatch[1].trim();
+        continue;
+      }
+
+      // "Width =<number>"
+      const widthMatch = trimmed.match(/^Width\s*=\s*(.+)/i);
+      if (widthMatch) {
+        current.width = widthMatch[1].trim();
+        continue;
+      }
+
+      // "Help String = <text>"
+      const helpMatch = trimmed.match(/^Help String\s*=\s*(.*)/i);
+      if (helpMatch) {
+        current.helpString = helpMatch[1].trim();
+        continue;
+      }
+    }
+
+    // Don't forget the last setting
+    if (current && current.name && (current.value !== null || current.token !== null)) {
+      settings[current.name] = {
+        token: current.token || "0",
+        value: current.value !== null ? current.value : current.biosDefault || "0x0",
+        currentLabel: current.currentLabel || "",
+        biosDefault: current.biosDefault || "",
+        defaultLabel: current.defaultLabel || "",
+        offset: current.offset || "",
+        width: current.width || "",
+        options: current.options || [],
+        helpString: current.helpString || "",
+      };
     }
 
     return settings;
   }
 
-  // Alternate parser for different AMISCE output formats
+  // Alternate parser for non-script AMISCE formats (simple Token/Value pairs)
   _parseExportAlt(raw) {
     const settings = {};
     const lines = raw.split("\n");
 
-    // Format 1: "Question: <name>" / "Value: <hex>" pairs
+    // Format 1: "Setup Question = <name>" with "Token = 0xHEX  Value = 0xHEX" on one line
     let currentName = null;
     for (const line of lines) {
-      const qMatch = line.match(/^\s*(?:Question|Variable|Name|Setting)\s*[:=]\s*(.+)/i);
+      const qMatch = line.match(/^\s*(?:Setup Question|Question|Variable|Name|Setting)\s*[:=]\s*(.+)/i);
       if (qMatch) {
         currentName = qMatch[1].trim();
         continue;
       }
-      const vMatch = line.match(/^\s*(?:Value|Current|Default)\s*[:=]\s*(0x[0-9A-Fa-f]+|[0-9]+)/i);
+      const vMatch = line.match(/Token\s*=\s*(0x[0-9A-Fa-f]+)\s+.*?Value\s*=\s*(0x[0-9A-Fa-f]+)/i);
       if (vMatch && currentName) {
+        settings[currentName] = { token: vMatch[1], value: vMatch[2], raw: line.trim() };
+        currentName = null;
+        continue;
+      }
+      // Also try simple "Value = <hex>" on its own line
+      const simpleVal = line.match(/^\s*(?:Value|Current|Default)\s*[:=]\s*(0x[0-9A-Fa-f]+|[0-9]+)/i);
+      if (simpleVal && currentName) {
+        const v = simpleVal[1];
         settings[currentName] = {
           token: "0x0",
-          value: vMatch[1].startsWith("0x") ? vMatch[1] : "0x" + parseInt(vMatch[1]).toString(16),
+          value: v.startsWith("0x") ? v : "0x" + parseInt(v).toString(16),
           raw: line.trim(),
         };
         currentName = null;
