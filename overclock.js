@@ -456,39 +456,38 @@ class SceWinManager {
     //  - Elevating PowerShell: gets full admin, then runs SCEWIN as a child process
     //    which inherits the admin token. We CAN pipe stdin and control working dir.
 
-    // Build the inner PowerShell command that will run elevated
-    // Use single quotes for paths inside the -Command string, escape for nesting
-    const psDir = scewinDir.replace(/'/g, "''");
-    const psExe = this.scewinPath.replace(/'/g, "''");
-    const psLocal = localExportFull.replace(/'/g, "''");
-    const psAmisce = amisceOutput.replace(/'/g, "''");
+    // Build the inner PowerShell command that will run elevated.
+    // Use cmd /c to run SCEWIN instead of PowerShell's & operator, because
+    // SCEWIN writes to stderr which PowerShell treats as NativeCommandError.
+    // cmd /c doesn't have this problem and matches how the user runs it manually.
     const psLogFile = batchLog.replace(/'/g, "''");
 
-    // The inner command runs inside elevated PowerShell
+    // Use cmd /c with echo pipe — this is exactly what works from admin CMD
     const innerCmd = [
-      `Set-Location -LiteralPath '${psDir}'`,
-      // Attempt 1: /o /s with absolute path
-      `Add-Content '${psLogFile}' '[Attempt1] /o /s absolute'`,
-      `$out1 = 'Y' | & '${psExe}' /o /s '${psLocal}' 2>&1 | Out-String`,
-      `Add-Content '${psLogFile}' $out1`,
-      `Add-Content '${psLogFile}' \"EXIT1:$LASTEXITCODE\"`,
-      // Attempt 2: /o /s relative filename
-      `if (-not (Test-Path '${psLocal}')) {`,
+      `$ErrorActionPreference = 'Continue'`,
+      `Add-Content '${psLogFile}' '[Starting export via cmd /c]'`,
+      // Attempt 1: /o /s with absolute path via cmd /c
+      `Add-Content '${psLogFile}' '[Attempt1] /o /s absolute path'`,
+      `$r1 = cmd /c "cd /d ""${scewinDir}"" && echo. | ""${this.scewinPath}"" /o /s ""${localExportFull}"" 2>&1"`,
+      `Add-Content '${psLogFile}' ($r1 | Out-String)`,
+      `Add-Content '${psLogFile}' "EXIT1:$LASTEXITCODE"`,
+      // Attempt 2: /o /s with just filename
+      `if (-not (Test-Path '${localExportFull.replace(/'/g, "''")}')) {`,
       `  Add-Content '${psLogFile}' '[Attempt2] /o /s relative'`,
-      `  $out2 = 'Y' | & './${scewinExe}' /o /s '${localExport}' 2>&1 | Out-String`,
-      `  Add-Content '${psLogFile}' $out2`,
-      `  Add-Content '${psLogFile}' \"EXIT2:$LASTEXITCODE\"`,
+      `  $r2 = cmd /c "cd /d ""${scewinDir}"" && echo. | ""${scewinExe}"" /o /s ${localExport} 2>&1"`,
+      `  Add-Content '${psLogFile}' ($r2 | Out-String)`,
+      `  Add-Content '${psLogFile}' "EXIT2:$LASTEXITCODE"`,
       `}`,
-      // Attempt 3: /o only (default output)
-      `if ((-not (Test-Path '${psLocal}')) -and (-not (Test-Path '${psAmisce}'))) {`,
+      // Attempt 3: /o only
+      `if ((-not (Test-Path '${localExportFull.replace(/'/g, "''")}')) -and (-not (Test-Path '${amisceOutput.replace(/'/g, "''")}')) ) {`,
       `  Add-Content '${psLogFile}' '[Attempt3] /o only'`,
-      `  $out3 = 'Y' | & './${scewinExe}' /o 2>&1 | Out-String`,
-      `  Add-Content '${psLogFile}' $out3`,
-      `  Add-Content '${psLogFile}' \"EXIT3:$LASTEXITCODE\"`,
+      `  $r3 = cmd /c "cd /d ""${scewinDir}"" && echo. | ""${scewinExe}"" /o 2>&1"`,
+      `  Add-Content '${psLogFile}' ($r3 | Out-String)`,
+      `  Add-Content '${psLogFile}' "EXIT3:$LASTEXITCODE"`,
       `}`,
-      // Log files in directory
+      // Log what files exist
       `Add-Content '${psLogFile}' '[FILES]'`,
-      `Get-ChildItem '${psDir}' -Filter *.txt | ForEach-Object { Add-Content '${psLogFile}' $_.Name }`,
+      `Get-ChildItem '${scewinDir.replace(/'/g, "''")}' -Filter *.txt | ForEach-Object { Add-Content '${psLogFile}' $_.Name }`,
       `Add-Content '${psLogFile}' '[DONE]'`,
     ].join("; ");
 
@@ -696,16 +695,14 @@ class SceWinManager {
     const logFile = path.join(scewinDir, "fn_scewin_cmd_log.txt");
     try { fs.unlinkSync(logFile); } catch(e) {}
 
-    // Build inner PowerShell command to run inside elevated session
-    const psDir = scewinDir.replace(/'/g, "''");
-    const psExe = this.scewinPath.replace(/'/g, "''");
     const psLog = logFile.replace(/'/g, "''");
 
+    // Use cmd /c to avoid PowerShell NativeCommandError with SCEWIN's stderr
     const innerCmd = [
-      `Set-Location -LiteralPath '${psDir}'`,
-      `$out = 'Y' | & '${psExe}' ${args} 2>&1 | Out-String`,
-      `Add-Content '${psLog}' $out`,
-      `Add-Content '${psLog}' \"EXIT_CODE:$LASTEXITCODE\"`,
+      `$ErrorActionPreference = 'Continue'`,
+      `$r = cmd /c "cd /d ""${scewinDir}"" && echo. | ""${this.scewinPath}"" ${args} 2>&1"`,
+      `Add-Content '${psLog}' ($r | Out-String)`,
+      `Add-Content '${psLog}' "EXIT_CODE:$LASTEXITCODE"`,
     ].join("; ");
 
     const encodedCmd = Buffer.from(innerCmd, "utf16le").toString("base64");
