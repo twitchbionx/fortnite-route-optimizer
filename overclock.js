@@ -701,47 +701,47 @@ class SceWinManager {
     this._lastExportLog = logContent;
 
     // Now check if the elevated search found and copied the file
-    if (fs.existsSync(exportPath)) {
-      try {
-        const raw = fs.readFileSync(exportPath, "utf8");
-        if (raw.length > 50) {
-          const settings = this._parseExport(raw);
-          let count = Object.keys(settings).length;
-          if (count > 0) {
-            this.currentSettings = settings;
-            return { success: true, settings, settingCount: count, method: "direct-elevated-search" };
-          }
-          const altSettings = this._parseExportAlt(raw);
-          count = Object.keys(altSettings).length;
-          if (count > 0) {
-            this.currentSettings = altSettings;
-            return { success: true, settings: altSettings, settingCount: count, method: "direct-elevated-search-alt" };
-          }
-        }
-      } catch(e) {}
-    }
-
-    // Also check all the standard paths one more time
-    const searchPaths = [
+    // Also check all the standard paths
+    const allCheckPaths = [
       exportPath, localExportFull, amisceOutput,
       path.join("C:\\Windows\\System32", localExport),
       path.join("C:\\Windows\\System32", "AMISCE.txt"),
     ];
-    for (const checkPath of searchPaths) {
+
+    for (const checkPath of allCheckPaths) {
       try {
         if (fs.existsSync(checkPath)) {
           const raw = fs.readFileSync(checkPath, "utf8");
+          // DIAGNOSTIC: Log the raw file contents so we can see the actual format
+          addLog(`[RAW_FILE] Path: ${checkPath} | Size: ${raw.length} bytes`);
+          addLog(`[RAW_FIRST_500] ${raw.substring(0, 500).replace(/\r?\n/g, "\\n")}`);
+          addLog(`[RAW_LAST_200] ${raw.substring(Math.max(0, raw.length - 200)).replace(/\r?\n/g, "\\n")}`);
+
           if (raw.length > 50) {
+            // Try standard AMISCE parse first
             const settings = this._parseExport(raw);
             let count = Object.keys(settings).length;
+            addLog(`[PARSE_STANDARD] Found ${count} settings`);
             if (count > 0) {
+              addLog(`[PARSE_STANDARD_NAMES] ${Object.keys(settings).slice(0, 20).join(", ")}`);
               this.currentSettings = settings;
               if (checkPath !== exportPath) try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
-              return { success: true, settings, settingCount: count, method: "found-after-search" };
+              return { success: true, settings, settingCount: count, method: "direct-elevated-search", rawPreview: raw.substring(0, 300) };
             }
+            // Try alternate parse
+            const altSettings = this._parseExportAlt(raw);
+            count = Object.keys(altSettings).length;
+            addLog(`[PARSE_ALT] Found ${count} settings`);
+            if (count > 0) {
+              addLog(`[PARSE_ALT_NAMES] ${Object.keys(altSettings).slice(0, 20).join(", ")}`);
+              this.currentSettings = altSettings;
+              if (checkPath !== exportPath) try { fs.copyFileSync(checkPath, exportPath); } catch(e) {}
+              return { success: true, settings: altSettings, settingCount: count, method: "direct-elevated-search-alt", rawPreview: raw.substring(0, 300) };
+            }
+            addLog("[PARSE_FAILED] Neither parser found valid settings in this file");
           }
         }
-      } catch(e) {}
+      } catch(e) { addLog(`[CHECK_ERROR] ${checkPath}: ${e.message}`); }
     }
 
     // Return diagnostic info even on failure
@@ -2061,6 +2061,27 @@ class AIOverclockEngine {
     }
     if (exported.method) {
       this._log("analyzing", "bios-discovery", `Export succeeded via: ${exported.method}`);
+    }
+
+    // Log raw file preview if available (diagnostic — helps identify wrong file or bad parse)
+    if (exported.rawPreview) {
+      this._log("analyzing", "bios-raw-preview", `Raw export first 300 chars: ${exported.rawPreview.replace(/\r?\n/g, "\\n")}`);
+    }
+    // Also try to read the export file directly for diagnostics
+    try {
+      const rawFile = fs.readFileSync(SCEWIN_EXPORT_PATH, "utf8");
+      this._log("analyzing", "bios-file-size", `Export file: ${rawFile.length} bytes`);
+      this._log("analyzing", "bios-file-head", `First 500 chars: ${rawFile.substring(0, 500).replace(/\r?\n/g, "\\n")}`);
+      // Count lines that look like actual settings
+      const lines = rawFile.split("\n");
+      this._log("analyzing", "bios-file-lines", `Total lines: ${lines.length}`);
+      const setupLines = lines.filter(l => /setup question|token.*value/i.test(l));
+      this._log("analyzing", "bios-file-setup", `Lines matching 'Setup Question' or 'Token/Value': ${setupLines.length}`);
+      if (setupLines.length > 0) {
+        this._log("analyzing", "bios-file-sample", `Sample setup lines: ${setupLines.slice(0, 5).join(" | ")}`);
+      }
+    } catch(e) {
+      this._log("analyzing", "bios-file-read-error", e.message);
     }
 
     const allNames = Object.keys(exported.settings);
